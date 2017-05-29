@@ -3,3 +3,5 @@ Blender/*
 ExampleCode/*
 Models/*
 TensorFlowModels/*
+notebooks/events.*
+slim/*
