@@ -5,3 +5,5 @@ Models/*
 TensorFlowModels/*
 notebooks/events.*
 slim/*
+*.json
+checkpoints/*
