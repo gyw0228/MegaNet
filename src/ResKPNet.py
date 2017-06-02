@@ -26,8 +26,8 @@ parser.add_argument('--image_train_dir', default='train2014')
 parser.add_argument('--image_val_dir', default='val2014')
 parser.add_argument('--image_test_dir', default='test2015')
 
-parser.add_argument('--model_path', default='checkpoints/vgg_16.ckpt', type=str)
-parser.add_argument('--batch_size', default=32, type=int)
+parser.add_argument('--model_path', default='checkpoints/resnet_v2_50.ckpt', type=str)
+parser.add_argument('--batch_size', default=10, type=int)
 parser.add_argument('--num_workers', default=4, type=int)
 parser.add_argument('--num_epochs1', default=10, type=int)
 parser.add_argument('--num_epochs2', default=10, type=int)
@@ -38,30 +38,66 @@ parser.add_argument('--weight_decay', default=5e-4, type=float)
 
 HEAD_SCOPE = 'Head'
 
-def keypoint_CrossEntropyLoss(prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
+def keypoint_CrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
     """
     heat_maps = predictions from network
     keypoints (N,17,2) = actual keypoint locations
     labels (N,17,1) = 0 if invalid, 1 if occluded, 2 if valid
     """
-    losses = tf.nn.sigmoid_cross_entropy_with_logits(logits=prediction_maps,labels=keypoint_masks)
-    labels = tf.reshape(labels,[-1,1,1,17])
-    losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
-    
-    return losses
+    with graph.as_default():
+        losses = tf.nn.sigmoid_cross_entropy_with_logits(logits=prediction_maps,labels=keypoint_masks)
+        labels = tf.reshape(labels,[-1,1,1,17])
+        losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
+        
+        return losses
 
 
-def keypoint_SquaredErrorLoss(prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
+def keypoint_SquaredErrorLoss(graph, prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
     """
     heat_maps = predictions from network
     keypoints (N,17,2) = actual keypoint locations
     labels (N,17,1) = 0 if invalid, 1 if occluded, 2 if valid
     """
-    losses = tf.squared_difference(prediction_maps,keypoint_masks)
-    labels = tf.reshape(labels,[-1,1,1,17])
-    losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
-    
-    return losses
+    with graph.as_default():
+        with tf.variable_scope(scope):
+            losses = tf.squared_difference(prediction_maps,keypoint_masks)
+            labels = tf.reshape(labels,[-1,1,1,17])
+            losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
+            
+            return losses
+
+def KeypointPrediction(graph, pred_masks, d, scope='KeypointPrediction'):
+    """
+    Input: Keypoint "Heatmap" Tensor
+    Output: Keypoint coordinates in tensor form
+    """
+    with graph.as_default():        
+        with tf.variable_scope(scope):
+            x = tf.reshape(tf.linspace(0.5,d-0.5,d),[1,d,1,1])
+            pred = tf.multiply(pred_masks, tf.to_float(tf.greater_equal(pred_masks,0.5)))
+            pred_i = tf.reduce_sum(tf.multiply(pred, x),axis=[1,2])/tf.reduce_sum(pred,axis=[1,2])
+            pred_j = tf.reduce_sum(tf.multiply(pred, tf.transpose(x,(0,2,1,3))),axis=[1,2])/tf.reduce_sum(pred,axis=[1,2])
+            pred_pts = tf.stack([pred_j,pred_i],axis=1)
+            pred_pts = tf.expand_dims(pred_pts,axis=1)
+            return pred_pts
+
+def keypointPredictionAccuracy(graph, pred_pts, true_pts, labels, threshold, scope='KeypointPrediction'):
+    """
+    Accuracy is a boolean: 1 if ||pred_pt-true_pt||^2 < threshold^2, 0 otherwise
+    """
+    with graph.as_default():
+        with tf.variable_scope(scope):
+            error = tf.multiply(tf.square(tf.subtract(pred_pts, true_pts)), tf.to_float(tf.greater_equal(labels, 1)))
+            accuracy = tf.reduce_mean(tf.to_float(tf.less(error,tf.square(threshold))))
+            return accuracy
+
+def MaskAccuracy(graph, pred_mask, true_mask):
+    with graph.as_default():        
+        overlap = tf.reduce_sum(tf.multiply(tf.to_float(pred_mask),tf.to_float(true_mask)),axis=[1,2,3])
+        score1 = tf.divide(overlap, tf.reduce_sum(tf.to_float(pred_mask),axis=[1,2,3]))
+        score2 = tf.divide(overlap, tf.reduce_sum(tf.to_float(true_mask),axis=[1,2,3]))
+        accuracy = tf.minimum(score1,score2)
+        return tf.reduce_mean(accuracy)
 
 
 # Initialize Dataset
@@ -86,6 +122,7 @@ def main(args):
     train_img_path, train_ann_path = get_data(args.base_dir,args.image_train_dir,args.train_data)
     val_img_path, val_ann_path = get_data(args.base_dir,args.image_val_dir,args.val_data)
     # initialize a coco object
+    print("Initializing COCO object to extract dataset...\n")
     coco = COCO(train_ann_path)
     # get all images containing the 'person' category
     catIds = coco.getCatIds(catNms=['person'])
@@ -97,11 +134,23 @@ def main(args):
     graph = tf.Graph()
     with graph.as_default():
         
+        #######################################################
+        ############### VARIOUS HYPER-PARAMETERS ##############
+        #######################################################
+
         NUM_KEYPOINTS = 17
         BATCH_SIZE = 10
-        L = 10.0 # keypoint effective radius
+        L = 5.0 # keypoint effective radius
         D = 225 # image height and width
-        
+        d = 57 # evaluation height and width (for mask and keypoint masks)
+
+        MASK_THRESHOLD = 0.5 # threshold for on/off prediction (in mask and keypoint masks)
+        KP_THRESHOLD = 0.5 # threshold for on/off prediction (in mask and keypoint masks)
+        KP_DISTANCE_THRESHOLD = 5.0 # threshold for determining if a keypoint estimate is accurate
+        X_INIT = tf.contrib.layers.xavier_initializer_conv2d() # xavier initializer for head architecture
+        learning_rate1 = args.learning_rate1
+        learning_rate2 = args.learning_rate2
+
         #######################################################
         #### VISUALIZATION TOOLS - WEIGHTS AND ACTIVATIONS ####
         #######################################################
@@ -205,15 +254,15 @@ def main(args):
             resized_mask = tf.image.resize_images(padded_mask,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
             return resized_image, resized_mask, pts, labels
 
-        def scaleDownMaskAndKeypoints(image, mask, pts, labels, D=D):
-            mask = tf.image.resize_images(mask,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
-            pts = tf.multiply(pts,tf.constant(0.5))
+        def scaleDownMaskAndKeypoints(image, mask, pts, labels, d=d, D=D):
+            mask = tf.image.resize_images(mask,tf.constant([d,d]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+            pts = tf.multiply(pts,tf.constant(d/D))
             return image, mask, pts, labels
         
-        def generate_keypoint_masks(image, mask, keypoints, labels, D=D, L=L):
-            X, Y = tf.meshgrid(tf.linspace(0.0,D,D),tf.linspace(0.0,D,D))
-            X = tf.reshape(X,[D,D,1])
-            Y = tf.reshape(Y,[D,D,1])
+        def generate_keypoint_masks(image, mask, keypoints, labels, d=d, D=D, L=L):
+            X, Y = tf.meshgrid(tf.linspace(0.0,d,d),tf.linspace(0.0,d,d))
+            X = tf.reshape(X,[d,d,1])
+            Y = tf.reshape(Y,[d,d,1])
             X_stack = tf.tile(X,tf.constant([1,1,17],dtype=tf.int32))
             Y_stack = tf.tile(Y,tf.constant([1,1,17],dtype=tf.int32))
 
@@ -225,10 +274,30 @@ def main(args):
             pt_masks = tf.multiply(tf.divide(tf.constant(1.0),tf.add(d1,d2)+L),L)
             return image, mask, pt_masks, pts, labels
         
+        #######################################################
+        ################## SUMMARY DICTIONARY #################
+        #######################################################
+
+        image_summary_list = []
+        scalar_summary_list = []
+
+        # summary_dict = {
+        #     'DataSet': {
+        #         'images': {}
+        #     }
+        #     'ResNet': {
+        #         'images': {}
+        #     }
+        #     'HeadNet': {
+        #         'images': {}
+        #         'scalars': {}
+        #     }
+        #     }
         
         #######################################################
         ################### PREPARE DATASET ###################
         #######################################################
+        print("Initializing Dataset...\n")
         with tf.variable_scope('DataSet'):
             # Initialize train_dataset
             filenames = tf.constant(['{}/COCO_train2014_{:0>12}.jpg'.format(train_img_path,imgID) for imgID in imgIds])
@@ -239,13 +308,21 @@ def main(args):
                                                                         [filename.dtype, tf.int64, tf.int64, tf.uint8]))
             # All other preprocessing in tensorflow
             train_dataset = train_dataset.map(preprocess_image_tf)
+            train_dataset = train_dataset.map(scaleDownMaskAndKeypoints)
             train_dataset = train_dataset.map(generate_keypoint_masks)
             # BATCH
             train_dataset = train_dataset.shuffle(buffer_size=10000)
             train_dataset = train_dataset.batch(10) # must resize images to make them match
             iterator = tf.contrib.data.Iterator.from_structure(train_dataset.output_types,train_dataset.output_shapes)
+
+            # images: (N,225,225,3), masks: (N,57,57,1), kpt_masks: (N,17,57,57,1), pts: (N,1,2,17), labels: (N,1,1,17)
             images, masks, kpt_masks, pts, labels = iterator.get_next()
             train_init_op = iterator.make_initializer(train_dataset)
+
+            image_summary_list.append(tf.summary.image('keypoint masks', getActivationImage(kpt_masks)))
+            image_summary_list.append(tf.summary.image('input images', images))
+            # summary_dict['DataSet']['images']['keypoint_masks'] = tf.summary.image('keypoint masks', getActivationImage(kpt_masks))
+            # summary_dict['dataset']['images']['images'] = tf.summary.image('input images', images)
         
         #######################################################
         ##################### BUILD GRAPH #####################
@@ -256,7 +333,7 @@ def main(args):
         # --------------------------------------------------- #
         # ------------- Resnet V2 50 "Backbone" ------------- #
         # --------------------------------------------------- #
-        
+        print("Loading ResNet V2 50 Backbone architecture...")
         resnet_v2 = tf.contrib.slim.nets.resnet_v2
         with slim.arg_scope(resnet_v2.resnet_arg_scope()):
             logits, endpoints = resnet_v2.resnet_v2_50(
@@ -267,70 +344,137 @@ def main(args):
                 output_stride=16,
                 scope='resnet_v2_50'
                 )
-    
-        model_path = 'checkpoints/resnet_v2_50.ckpt'
+
+        # Model Path to ResNet v2 50 checkpoint
+        model_path = args.model_path
         assert(os.path.isfile(model_path))
         # Backbone Variables - remember to exclude all variables above backbone (including block4 and logits)
-        variables_to_restore = tf.contrib.framework.get_variables_to_restore(exclude=['resnet_v2_50/postnorm','resnet_v2_50/logits'])
-        # Head variables
-        # Note: We would need another set of variables and another initializer to capture the logits as well
-        other_variables = tf.contrib.framework.get_variables('resnet_v2_50/postnorm')
+        backbone_variables = tf.contrib.framework.get_variables_to_restore(exclude=['resnet_v2_50/postnorm','resnet_v2_50/logits'])
+        init_fn = tf.contrib.framework.assign_from_checkpoint_fn(model_path, backbone_variables) # Call to load pretrained weights
+
+        image_summary_list.append(tf.summary.image(
+            'ResNet - layer1 weights',getFilterImage(tf.contrib.framework.get_variables('resnet_v2_50/conv1/weights'))))
+        for i in range(4):
+            image_summary_list.append(tf.summary.image(
+                'ResNet - block {}'.format(i+1), getActivationImage(endpoints['resnet_v2_50/block{}'.format(i+1)])
+                ))
 
         # --------------------------------------------------- #
         # --------------- "Head" Architecture --------------- #
         # --------------------------------------------------- #
+        print("Defining Network Head architecture...\n")
+        block1 = endpoints['resnet_v2_50/block1']
+        block2 = endpoints['resnet_v2_50/block2']
+        block3 = endpoints['resnet_v2_50/block3']
+        block4 = endpoints['resnet_v2_50/block4']
 
-        # with tf.variable_scope(HEAD_SCOPE):
-        #     # extract attachment tensors from ResNet graph
-        #     block1 = endpoints['resnet_v2_50/block1'] # (N,29,29,256)
-        #     block2 = endpoints['resnet_v2_50/block2'] # (N,15,15,512)
-        #     block3 = endpoints['resnet_v2_50/block3'] # (N,15,15,1024)
-        #     block4 = endpoints['resnet_v2_50/block4'] # (N,15,15,2048)
+        HEAD_SCOPE = 'NetworkHead'
 
-        #     with slim.arg_scope(kernel_size=(3,3), strides=(1,1), activation=tf.nn.relu):
-        #         # 1x1 or 3x3 convolutions to reduce dimensionality
-        #         block1 = tf.layers.conv2d(block1, 64, kernel_size=(3,3), strides=(1,1))
-        #         block2 = tf.layers.conv2d(block2, 128, kernel_size=(3,3), strides=(1,1))
-        #         block3 = tf.layers.conv2d(block3, 128, kernel_size=(1,1), strides=(1,1))
-        #         block4 = tf.layers.conv2d(block4, 128, kernel_size=(1,1), strides=(1,1))
+        with tf.variable_scope(HEAD_SCOPE):
+            with tf.variable_scope('Layer1'):
+                b1 = tf.layers.conv2d(block1, 64, kernel_size=(3,3), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
+                b2 = tf.layers.conv2d(block2, 128, kernel_size=(3,3), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
+                b3 = tf.layers.conv2d(block3, 128, kernel_size=(1,1), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
+                b4 = tf.layers.conv2d(block4, 128, kernel_size=(1,1), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
 
+                image_summary_list.append(tf.summary.image('Head - b1', getActivationImage(b1)))
+                image_summary_list.append(tf.summary.image('Head - b2', getActivationImage(b2)))
+                image_summary_list.append(tf.summary.image('Head - b3', getActivationImage(b3)))
+                image_summary_list.append(tf.summary.image('Head - b4', getActivationImage(b4)))
 
-        
+            with tf.variable_scope('Layer2'):
+                b1 = tf.layers.conv2d(block1, 32, kernel_size=(3,3), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
 
+                b2 = tf.layers.conv2d_transpose(b2, 32, kernel_size=(3,3), strides=(2,2),padding='VALID',activation=tf.nn.relu, kernel_initializer=X_INIT)
+                b3 = tf.layers.conv2d_transpose(b3, 64, kernel_size=(3,3), strides=(2,2),padding='VALID',activation=tf.nn.relu, kernel_initializer=X_INIT)
+                b4 = tf.layers.conv2d_transpose(b4, 64, kernel_size=(3,3), strides=(2,2),padding='VALID',activation=tf.nn.relu, kernel_initializer=X_INIT)
+                # Crop back down to 29x29
+                b2 = b2[:,1:-1,1:-1,:]
+                b3 = b3[:,1:-1,1:-1,:]
+                b4 = b4[:,1:-1,1:-1,:]
 
+            with tf.variable_scope('BatchNorm'):
+                b1 = tf.layers.batch_normalization(b1)
+                b2 = tf.layers.batch_normalization(b2)
+                b3 = tf.layers.batch_normalization(b3)
+                b4 = tf.layers.batch_normalization(b4)
 
+            with tf.variable_scope('Funnel'):
+                head = tf.concat([b1,b2,b3,b4],axis=3)
 
-        
+            with tf.variable_scope('MaskHead'):
+                mask_head = tf.layers.conv2d_transpose(head, 16, (3,3), (2,2), padding='VALID', activation=tf.nn.relu, kernel_initializer=X_INIT)
+                mask_head = mask_head[:,1:-1,1:-1,:]
+                mask_head = tf.layers.conv2d(mask_head, 1, (1,1), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
+
+            with tf.variable_scope('KeypointHead'):
+                keypoint_head = tf.layers.conv2d_transpose(head, 32, (3,3), (2,2), padding='VALID', activation=tf.nn.relu, kernel_initializer=X_INIT)
+                keypoint_head = keypoint_head[:,1:-1,1:-1,:]
+                keypoint_head = tf.layers.conv2d(keypoint_head, 17, (1,1), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
+
+        ########## Prediction and Accuracy Checking ########### 
+
+            with tf.variable_scope('MaskPrediction'):
+                mask_prediction = tf.nn.sigmoid(mask_head)
+                mask_prediction = tf.to_float(tf.greater_equal(mask_prediction, MASK_THRESHOLD))
+                mask_accuracy = MaskAccuracy(graph, mask_prediction, masks)
+
+                image_summary_list.append(tf.summary.image('Head - mask prediction', mask_prediction))
+                scalar_summary_list.append(tf.summary.scalar('Head - mask accuracy', mask_accuracy))
+
+            with tf.variable_scope('KeypointsPrediction'):
+                keypoint_mask_prediction = tf.nn.sigmoid(keypoint_head)
+                keypoint_mask_prediction = tf.to_float(tf.greater_equal(keypoint_mask_prediction, KP_THRESHOLD))
+                keypoint_prediction = KeypointPrediction(graph, keypoint_mask_prediction, d=d)
+
+                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', getActivationImage(keypoint_mask_prediction)))
+                for i in [1.0,2.0,3.0,5.0,8.0]:
+                    scalar_summary_list.append(tf.summary.scalar(
+                        'Head - keypoint accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_prediction, pts, labels, i)
+                    ))
+                
+                
         #######################################################
-        ############## INITIALIZE AND RUN GRAPH ###############
+        ####################### LOSSES ########################
         #######################################################
 
-        # Call to load pretrained weights for backbone variables
-        init_fn = tf.contrib.framework.assign_from_checkpoint_fn(model_path, variables_to_restore)
+            with tf.variable_scope('Losses'):
+                with tf.variable_scope('SegmentationLoss'):
+                    mask_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=mask_head, labels=tf.to_float(masks)))
+                with tf.variable_scope('KeypointLoss'):
+                    keypoint_loss = tf.reduce_mean(keypoint_CrossEntropyLoss(graph, keypoint_head, kpt_masks, labels, L=L))
+            
+                # mask_loss_summary = tf.summary.scalar('MaskLoss', mask_loss)
+                scalar_summary_list.append(tf.summary.scalar('Head - mask loss', mask_loss, collections=None))
+                # keypoint_loss_summary = tf.summary.scalar('KeypointLoss', keypoint_loss)
+                scalar_summary_list.append(tf.summary.scalar('Head - keypoint loss', keypoint_loss, collections=None))
+
+                total_loss = tf.add_n([mask_loss, keypoint_loss],name='TotalLoss')
+
         # Call to initialize Head Variables from scratch
-        rand_init = tf.variables_initializer(other_variables)
+        head_variables = tf.contrib.framework.get_variables(HEAD_SCOPE)
+        init_head = tf.variables_initializer(head_variables, 'init_head')
 
+        # all_variables = tf.contrib.framework.get_trainable_variables() # backbone AND head
+
+        #######################################################
+        ###################### OPTIMIZERS #####################
+        #######################################################
+
+        with tf.variable_scope('Optimizers'):
+            head_optimizer = tf.train.RMSPropOptimizer(learning_rate1)
+            head_train_op = head_optimizer.minimize(total_loss, global_step=None, var_list=head_variables, gate_gradients=tf.train.RMSPropOptimizer.GATE_NONE)
+        
+        # RMSProp optimizer uses "slot" variables for maintaining the running average of weight updates. It must therefore be initialized 
+        optimizer_variables = tf.contrib.framework.get_variables('Optimizers')
+        init_optimizer = tf.variables_initializer(optimizer_variables)
+
+        #######################################################
         ###################### SUMMARIES ######################
-        filters = tf.contrib.framework.get_variables('resnet_v2_50/conv1/weights')
-        weight_image = getFilterImage(filters)
-        weights1_summary = tf.summary.image("Layer1_Weights", weight_image)
-        # Inspect Layer activations
-        block1_activations = getActivationImage(endpoints['resnet_v2_50/block1'])
-        block2_activations = getActivationImage(endpoints['resnet_v2_50/block2'])
-        block3_activations = getActivationImage(endpoints['resnet_v2_50/block3'])
-        block4_activations = getActivationImage(endpoints['resnet_v2_50/block4'])
-        block1_unit1_activations = getActivationImage(endpoints['resnet_v2_50/block1/unit_1/bottleneck_v2'])
+        #######################################################
 
-        block1_summary = tf.summary.image('Block1',block1_activations)
-        block2_summary = tf.summary.image('Block2',block2_activations)
-        block3_summary = tf.summary.image('Block3',block3_activations)
-        block4_summary = tf.summary.image('Block4',block4_activations)
-        block1_unit1_summary = tf.summary.image('Block1_Unit1', block1_unit1_activations)
-        # Merge all summaries together
-        image_summaries = tf.summary.merge(
-            [weights1_summary, block1_summary, block1_unit1_summary, block2_summary, block3_summary, block4_summary],
-            collections=None, name="image_summaries")
-
+        image_summary = tf.summary.merge(image_summary_list, collections=None, name="Image Summaries")
+        scalar_summary = tf.summary.merge(scalar_summary_list, collections=None, name="Scalar Summaries")
 
         # Finalize default graph - THIS SEEMS TO PREVENT ADDING A FILEWRITER LATER
         tf.get_default_graph().finalize()
@@ -340,14 +484,59 @@ def main(args):
             # file writer to save graph for Tensorboard
             file_writer = tf.summary.FileWriter('/tmp/KyleNet/1')
             file_writer.add_graph(sess.graph)
-            # initialize pretrained variables
-            init_fn(sess)
-            # initialize other variables
-            sess.run(rand_init)
-            sess.run(train_init_op) # initialize dataset iterator
+            # initialize variables
+            print("Initializing backbone variables...")
+            init_fn(sess) # pretrained backbone variables
+            print("Initializing head variables...")
+            sess.run(init_head) # head variables
+            print("Initializing optimizer variables...\n")
+            sess.run(init_optimizer)
+            # initialize dataset iterator
+            # sess.run(train_init_op)
 
-            visualization_summaries = sess.run(image_summaries,{is_training: False})
-            file_writer.add_summary(visualization_summaries, global_step=1)
+            print("Beginning Training...")
+            for epoch in range(args.num_epochs1):
+                # Run an epoch over the training data.
+                print('### Starting epoch {}/{} ####################'.format(epoch + 1, args.num_epochs1))
+                sess.run(train_init_op) # initialize the iterator with the training set.
+
+                batch = 1
+                batches_per_epoch = 3
+                while True:
+                    try:
+                        total_loss_val, _ = sess.run([total_loss, head_train_op], {is_training: True})
+                        print('----- Total loss for batch {}: {}'.format(batch, total_loss_val))
+                        batch += 1
+                    except tf.errors.OutOfRangeError:
+                        break
+
+                # reinitialize dataset to run accuracy checks and generate summaries for visualization in Tensorboard
+                sess.run(train_init_op)
+                if epoch % 5 == 0:
+                    image_summ, scalar_summ = sess.run([image_summary, scalar_summary],{is_training: False})
+                    file_writer.add_summary(image_summ, global_step=epoch)
+                    file_writer.add_summary(scalar_summ, global_step=epoch)
+                else:
+                    scalar_summ = sess.run(scalar_summary, {is_training: False})
+                    file_writer.add_summary(scalar_summ, global_step=epoch)
+
+
+                # # Check accuracy on the train and val sets every epoch.
+                # train_acc = check_accuracy(sess, correct_prediction, is_training, train_init_op)
+                # val_acc = check_accuracy(sess, correct_prediction, is_training, val_init_op)
+                # print('Train accuracy: %f' % train_acc)
+                # print('Val accuracy: %f\n' % val_acc)
+
+
+            # run some summaries to look at in tensorboard
+            # visualization_summaries = sess.run(image_summary_list,{is_training: False})
+            # file_writer.add_summary(visualization_summaries, global_step=1)
+
+            # keypoint_masks = sess.run(kpt_masks, {is_training: False})
+
+            # plt.figure()
+            # plt.imshow(keypoint_masks[0][:,:,0])
+            # plt.show()
 
             print("Finished")
             return
