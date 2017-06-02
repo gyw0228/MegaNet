@@ -352,12 +352,13 @@ def main(args):
         backbone_variables = tf.contrib.framework.get_variables_to_restore(exclude=['resnet_v2_50/postnorm','resnet_v2_50/logits'])
         init_fn = tf.contrib.framework.assign_from_checkpoint_fn(model_path, backbone_variables) # Call to load pretrained weights
 
-        image_summary_list.append(tf.summary.image(
-            'ResNet - layer1 weights',getFilterImage(tf.contrib.framework.get_variables('resnet_v2_50/conv1/weights'))))
-        for i in range(4):
+        with tf.name_scope('ResNet')
             image_summary_list.append(tf.summary.image(
-                'ResNet - block {}'.format(i+1), getActivationImage(endpoints['resnet_v2_50/block{}'.format(i+1)])
-                ))
+                'ResNet - layer1 weights',getFilterImage(tf.contrib.framework.get_variables('resnet_v2_50/conv1/weights'))))
+            for i in range(4):
+                image_summary_list.append(tf.summary.image(
+                    'ResNet - block {}'.format(i+1), getActivationImage(endpoints['resnet_v2_50/block{}'.format(i+1)])
+                    ))
 
         # --------------------------------------------------- #
         # --------------- "Head" Architecture --------------- #
@@ -401,15 +402,18 @@ def main(args):
 
             with tf.variable_scope('Funnel'):
                 head = tf.concat([b1,b2,b3,b4],axis=3)
+                head = tf.layers.conv2d(head,64,(1,1),(1,1),'SAME',activation=tf.nn.relu,kernel_initializer=X_INIT)
 
             with tf.variable_scope('MaskHead'):
-                mask_head = tf.layers.conv2d_transpose(head, 16, (3,3), (2,2), padding='VALID', activation=tf.nn.relu, kernel_initializer=X_INIT)
+                mask_head = tf.layers.conv2d_transpose(head, 32, (3,3), (2,2), padding='VALID', activation=tf.nn.relu, kernel_initializer=X_INIT)
                 mask_head = mask_head[:,1:-1,1:-1,:]
+                mask_head = tf.layers.conv2d(mask_head, 16, (3,3), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
                 mask_head = tf.layers.conv2d(mask_head, 1, (1,1), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
 
             with tf.variable_scope('KeypointHead'):
                 keypoint_head = tf.layers.conv2d_transpose(head, 32, (3,3), (2,2), padding='VALID', activation=tf.nn.relu, kernel_initializer=X_INIT)
                 keypoint_head = keypoint_head[:,1:-1,1:-1,:]
+                keypoint_head = tf.layers.conv2d(keypoint_head, 32, (3,3), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
                 keypoint_head = tf.layers.conv2d(keypoint_head, 17, (1,1), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
 
         ########## Prediction and Accuracy Checking ########### 
