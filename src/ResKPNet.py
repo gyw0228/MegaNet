@@ -28,6 +28,7 @@ parser.add_argument('--image_test_dir', default='test2015')
 
 parser.add_argument('--model_path', default='checkpoints/resnet_v2_50.ckpt', type=str)
 parser.add_argument('--batch_size', default=10, type=int)
+parser.add_argument('--small_dataset', default=True, type=bool)
 parser.add_argument('--num_workers', default=4, type=int)
 parser.add_argument('--num_epochs1', default=10, type=int)
 parser.add_argument('--num_epochs2', default=10, type=int)
@@ -196,10 +197,11 @@ def main(args):
     val_catIds = val_coco.getCatIds(catNms=['person'])
     val_imgIds = val_coco.getImgIds(catIds=val_catIds)
     # Just for dealing with the images on my computer (not necessary when working with the whole dataset)
-    train_catIds = train_catIds[0:30]
-    train_imgIds = train_imgIds[0:30]
-    val_catIds = val_catIds[0:30]
-    val_imgIds = val_imgIds[0:30]
+    if args.small_dataset:
+        train_catIds = train_catIds[0:30]
+        train_imgIds = train_imgIds[0:30]
+        val_catIds = val_catIds[0:30]
+        val_imgIds = val_imgIds[0:30]
 
     graph = tf.Graph()
     with graph.as_default():
