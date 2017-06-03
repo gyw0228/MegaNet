@@ -18,7 +18,7 @@ pylab.rcParams['figure.figsize'] = (10.0, 8.0)
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--base_dir', default='/Users/kyle/Repositories/coco')
+parser.add_argument('--base_dir', default='/home/kyle/Project/coco')
 parser.add_argument('--train_data', default='person_keypoints_train2014')
 parser.add_argument('--val_data', default='person_keypoints_val2014')
 parser.add_argument('--test_data', default='image_info_test-dev2015')
@@ -26,7 +26,7 @@ parser.add_argument('--image_train_dir', default='train2014')
 parser.add_argument('--image_val_dir', default='val2014')
 parser.add_argument('--image_test_dir', default='test2015')
 
-parser.add_argument('--model_path', default='checkpoints/resnet_v2_50.ckpt', type=str)
+parser.add_argument('--model_path', default='/home/kyle/MegaNet/checkpoints/resnet_v2_50.ckpt', type=str)
 parser.add_argument('--batch_size', default=10, type=int)
 parser.add_argument('--num_workers', default=4, type=int)
 parser.add_argument('--num_epochs1', default=10, type=int)
@@ -128,8 +128,8 @@ def main(args):
     catIds = coco.getCatIds(catNms=['person'])
     imgIds = coco.getImgIds(catIds=catIds)
     # Just for dealing with the images on my computer (not necessary when working with the whole dataset)
-    catIds = imgIds[0:30]
-    imgIds = imgIds[0:30]
+    # catIds = imgIds[0:30]
+    # imgIds = imgIds[0:30]
 
     graph = tf.Graph()
     with graph.as_default():
@@ -281,19 +281,6 @@ def main(args):
         image_summary_list = []
         scalar_summary_list = []
 
-        # summary_dict = {
-        #     'DataSet': {
-        #         'images': {}
-        #     }
-        #     'ResNet': {
-        #         'images': {}
-        #     }
-        #     'HeadNet': {
-        #         'images': {}
-        #         'scalars': {}
-        #     }
-        #     }
-        
         #######################################################
         ################### PREPARE DATASET ###################
         #######################################################
@@ -312,7 +299,7 @@ def main(args):
             train_dataset = train_dataset.map(generate_keypoint_masks)
             # BATCH
             train_dataset = train_dataset.shuffle(buffer_size=10000)
-            train_dataset = train_dataset.batch(10) # must resize images to make them match
+            train_dataset = train_dataset.batch(BATCH_SIZE) # must resize images to make them match
             iterator = tf.contrib.data.Iterator.from_structure(train_dataset.output_types,train_dataset.output_shapes)
 
             # images: (N,225,225,3), masks: (N,57,57,1), kpt_masks: (N,17,57,57,1), pts: (N,1,2,17), labels: (N,1,1,17)
@@ -352,7 +339,7 @@ def main(args):
         backbone_variables = tf.contrib.framework.get_variables_to_restore(exclude=['resnet_v2_50/postnorm','resnet_v2_50/logits'])
         init_fn = tf.contrib.framework.assign_from_checkpoint_fn(model_path, backbone_variables) # Call to load pretrained weights
 
-        with tf.name_scope('ResNet')
+        with tf.name_scope('ResNet'):
             image_summary_list.append(tf.summary.image(
                 'ResNet - layer1 weights',getFilterImage(tf.contrib.framework.get_variables('resnet_v2_50/conv1/weights'))))
             for i in range(4):
@@ -505,7 +492,6 @@ def main(args):
                 sess.run(train_init_op) # initialize the iterator with the training set.
 
                 batch = 1
-                batches_per_epoch = 3
                 while True:
                     try:
                         total_loss_val, _ = sess.run([total_loss, head_train_op], {is_training: True})
@@ -516,7 +502,7 @@ def main(args):
 
                 # reinitialize dataset to run accuracy checks and generate summaries for visualization in Tensorboard
                 sess.run(train_init_op)
-                if epoch % 5 == 0:
+                if epoch % 200 == 0:
                     image_summ, scalar_summ = sess.run([image_summary, scalar_summary],{is_training: False})
                     file_writer.add_summary(image_summ, global_step=epoch)
                     file_writer.add_summary(scalar_summ, global_step=epoch)
