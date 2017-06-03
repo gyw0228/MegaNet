@@ -471,10 +471,10 @@ def main(args):
                 b4 = b4[:,1:-1,1:-1,:]
 
             with tf.variable_scope('BatchNorm'):
-                b1 = tf.layers.batch_normalization(b1,axis=2)
-                b2 = tf.layers.batch_normalization(b2,axis=2)
-                b3 = tf.layers.batch_normalization(b3,axis=2)
-                b4 = tf.layers.batch_normalization(b4,axis=2)
+                b1 = tf.layers.batch_normalization(b1)
+                b2 = tf.layers.batch_normalization(b2)
+                b3 = tf.layers.batch_normalization(b3)
+                b4 = tf.layers.batch_normalization(b4)
 
             with tf.variable_scope('Funnel'):
                 head = tf.concat([b1,b2,b3,b4],axis=3)
