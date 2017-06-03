@@ -34,9 +34,32 @@ parser.add_argument('--num_epochs2', default=10, type=int)
 parser.add_argument('--learning_rate1', default=1e-3, type=float)
 parser.add_argument('--learning_rate2', default=1e-5, type=float)
 parser.add_argument('--dropout_keep_prob', default=0.5, type=float)
-parser.add_argument('--weight_decay', default=5e-4, type=float)
+parser.add_argument('--decay_rate', default=0.8, type=float)
+parser.add_argument('--decay_steps', default=50000, type=float)
 
 HEAD_SCOPE = 'Head'
+
+def check_accuracy(sess, mask_accuracy, keypoint_accuracy, is_training, dataset_init_op,MAX_BATCHES=50):
+    """
+    Check the accuracy of the model on either train or val (depending on dataset_init_op).
+    """
+    # Initialize the correct dataset
+    sess.run(dataset_init_op)
+    evals = 0
+    epoch_mask_accuracy = 0
+    epoch_kpt_accuracy = 0
+    while True and evals < MAX_BATCHES:
+        try:
+            mask_acc, kpt_acc = sess.run([mask_accuracy, keypoint_accuracy], {is_training: False})
+            epoch_mask_accuracy += mask_acc
+            epoch_kpt_accuracy += kpt_acc
+            evals += 1
+        except tf.errors.OutOfRangeError:
+            break
+    epoch_mask_accuracy = float(epoch_mask_accuracy/evals)
+    epoch_kpt_accuracy = float(epoch_kpt_accuracy/evals)
+
+    return epoch_mask_accuracy, epoch_kpt_accuracy
 
 def keypoint_CrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
     """
@@ -46,6 +69,20 @@ def keypoint_CrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=
     """
     with graph.as_default():
         losses = tf.nn.sigmoid_cross_entropy_with_logits(logits=prediction_maps,labels=keypoint_masks)
+        labels = tf.reshape(labels,[-1,1,1,17])
+        losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
+        
+        return losses
+
+def keypoint_TargetedCrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
+    """
+    heat_maps = predictions from network
+    keypoints (N,17,2) = actual keypoint locations
+    labels (N,17,1) = 0 if invalid, 1 if occluded, 2 if valid
+    """
+    with graph.as_default():
+        losses = tf.nn.sigmoid_cross_entropy_with_logits(logits=prediction_maps,labels=keypoint_masks)
+        losses = tf.multiply(losses, keypoint_masks) # Constrain loss to correct prediction region
         labels = tf.reshape(labels,[-1,1,1,17])
         losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
         
@@ -111,25 +148,22 @@ def get_data(base_dir,image_dir,ann_file):
 
 def main(args):
     ######################## Data Path ########################
-    # baseDir = args.base_dir
-    # trainData = args.train_data
-    # valData = args.val_data
-    # testData = args.test_data
-    # imageTrainDir = args.image_train_dir
-    # imageValDir = args.image_val_dir
-    # imageTestDir = args.image_test_dir
-
     train_img_path, train_ann_path = get_data(args.base_dir,args.image_train_dir,args.train_data)
     val_img_path, val_ann_path = get_data(args.base_dir,args.image_val_dir,args.val_data)
     # initialize a coco object
-    print("Initializing COCO object to extract dataset...\n")
-    coco = COCO(train_ann_path)
+    print("Initializing COCO objects to extract training and validation datasets...\n")
+    train_coco = COCO(train_ann_path)
+    val_coco = COCO(val_ann_path)
     # get all images containing the 'person' category
-    catIds = coco.getCatIds(catNms=['person'])
-    imgIds = coco.getImgIds(catIds=catIds)
+    train_catIds = train_coco.getCatIds(catNms=['person'])
+    train_imgIds = train_coco.getImgIds(catIds=train_catIds)
+    val_catIds = val_coco.getCatIds(catNms=['person'])
+    val_imgIds = val_coco.getImgIds(catIds=val_catIds)
     # Just for dealing with the images on my computer (not necessary when working with the whole dataset)
-    catIds = imgIds[0:30]
-    imgIds = imgIds[0:30]
+    train_catIds = train_catIds[0:30]
+    train_imgIds = train_imgIds[0:30]
+    val_catIds = val_catIds[0:30]
+    val_imgIds = val_imgIds[0:30]
 
     graph = tf.Graph()
     with graph.as_default():
@@ -139,7 +173,7 @@ def main(args):
         #######################################################
 
         NUM_KEYPOINTS = 17
-        BATCH_SIZE = 10
+        BATCH_SIZE = args.batch_size
         L = 5.0 # keypoint effective radius
         D = 225 # image height and width
         d = 57 # evaluation height and width (for mask and keypoint masks)
@@ -186,7 +220,16 @@ def main(args):
         #######################################################
         ##### PRE-PROCESSING AND DATASET EXTRACTION TOOLS #####
         #######################################################
-        def extract_annotations(filename, imgID, coco=coco):
+        def extract_annotations_train(filename, imgID, coco=train_coco):
+            anns = coco.loadAnns(coco.getAnnIds(imgID,catIds=[1],iscrowd=None))
+            ann = max([ann for ann in anns], key=lambda item:item['area']) # extract annotation for biggest instance
+            bbox = np.array(np.floor(ann['bbox']),dtype=int)
+            keypoints = np.reshape(ann['keypoints'],(-1,3))
+            mask = coco.annToMask(ann)
+            
+            return filename, bbox, keypoints, mask
+
+        def extract_annotations_val(filename, imgID, coco=val_coco):
             anns = coco.loadAnns(coco.getAnnIds(imgID,catIds=[1],iscrowd=None))
             ann = max([ann for ann in anns], key=lambda item:item['area']) # extract annotation for biggest instance
             bbox = np.array(np.floor(ann['bbox']),dtype=int)
@@ -281,48 +324,43 @@ def main(args):
         image_summary_list = []
         scalar_summary_list = []
 
-        # summary_dict = {
-        #     'DataSet': {
-        #         'images': {}
-        #     }
-        #     'ResNet': {
-        #         'images': {}
-        #     }
-        #     'HeadNet': {
-        #         'images': {}
-        #         'scalars': {}
-        #     }
-        #     }
-        
         #######################################################
         ################### PREPARE DATASET ###################
         #######################################################
         print("Initializing Dataset...\n")
         with tf.variable_scope('DataSet'):
-            # Initialize train_dataset
-            filenames = tf.constant(['{}/COCO_train2014_{:0>12}.jpg'.format(train_img_path,imgID) for imgID in imgIds])
-            imgID_tensor = tf.constant(imgIds)
-            train_dataset = tf.contrib.data.Dataset.from_tensor_slices((filenames,imgID_tensor))
-            # Extract Annotations via coco interface
-            train_dataset = train_dataset.map(lambda filename, imgID: tf.py_func(extract_annotations, [filename, imgID], 
-                                                                        [filename.dtype, tf.int64, tf.int64, tf.uint8]))
-            # All other preprocessing in tensorflow
+            ################### TRAIN DATASET ###################
+            train_filenames = tf.constant(['{}/COCO_train2014_{:0>12}.jpg'.format(train_img_path, imgID) for imgID in train_imgIds])
+            train_imgID_tensor = tf.constant(train_imgIds)
+            train_dataset = tf.contrib.data.Dataset.from_tensor_slices((train_filenames, train_imgID_tensor))
+            train_dataset = train_dataset.map(
+                lambda filename, imgID: tf.py_func(extract_annotations_train, [filename, imgID], [filename.dtype, tf.int64, tf.int64, tf.uint8]))
             train_dataset = train_dataset.map(preprocess_image_tf)
             train_dataset = train_dataset.map(scaleDownMaskAndKeypoints)
             train_dataset = train_dataset.map(generate_keypoint_masks)
-            # BATCH
             train_dataset = train_dataset.shuffle(buffer_size=10000)
-            train_dataset = train_dataset.batch(10) # must resize images to make them match
-            iterator = tf.contrib.data.Iterator.from_structure(train_dataset.output_types,train_dataset.output_shapes)
+            train_dataset = train_dataset.batch(BATCH_SIZE)
 
-            # images: (N,225,225,3), masks: (N,57,57,1), kpt_masks: (N,17,57,57,1), pts: (N,1,2,17), labels: (N,1,1,17)
+            #################### VAL DATASET ####################
+            val_filenames = tf.constant(['{}/COCO_val2014_{:0>12}.jpg'.format(val_img_path, imgID) for imgID in val_imgIds])
+            val_imgID_tensor = tf.constant(val_imgIds)
+            val_dataset = tf.contrib.data.Dataset.from_tensor_slices((val_filenames, val_imgID_tensor))
+            val_dataset = val_dataset.map(
+                lambda filename, imgID: tf.py_func(extract_annotations_val,[filename, imgID],[filename.dtype, tf.int64, tf.int64, tf.uint8]))
+            val_dataset = val_dataset.map(preprocess_image_tf)
+            val_dataset = val_dataset.map(scaleDownMaskAndKeypoints)
+            val_dataset = val_dataset.map(generate_keypoint_masks)
+            val_dataset = val_dataset.shuffle(buffer_size=10000)
+            val_dataset = val_dataset.batch(BATCH_SIZE)
+
+            iterator = tf.contrib.data.Iterator.from_structure(train_dataset.output_types, train_dataset.output_shapes)
+
             images, masks, kpt_masks, pts, labels = iterator.get_next()
             train_init_op = iterator.make_initializer(train_dataset)
+            val_init_op = iterator.make_initializer(val_dataset)
 
             image_summary_list.append(tf.summary.image('keypoint masks', getActivationImage(kpt_masks)))
             image_summary_list.append(tf.summary.image('input images', images))
-            # summary_dict['DataSet']['images']['keypoint_masks'] = tf.summary.image('keypoint masks', getActivationImage(kpt_masks))
-            # summary_dict['dataset']['images']['images'] = tf.summary.image('input images', images)
         
         #######################################################
         ##################### BUILD GRAPH #####################
@@ -352,7 +390,7 @@ def main(args):
         backbone_variables = tf.contrib.framework.get_variables_to_restore(exclude=['resnet_v2_50/postnorm','resnet_v2_50/logits'])
         init_fn = tf.contrib.framework.assign_from_checkpoint_fn(model_path, backbone_variables) # Call to load pretrained weights
 
-        with tf.name_scope('ResNet')
+        with tf.variable_scope('resnet_v2_50'):
             image_summary_list.append(tf.summary.image(
                 'ResNet - layer1 weights',getFilterImage(tf.contrib.framework.get_variables('resnet_v2_50/conv1/weights'))))
             for i in range(4):
@@ -430,13 +468,13 @@ def main(args):
                 keypoint_mask_prediction = tf.nn.sigmoid(keypoint_head)
                 keypoint_mask_prediction = tf.to_float(tf.greater_equal(keypoint_mask_prediction, KP_THRESHOLD))
                 keypoint_prediction = KeypointPrediction(graph, keypoint_mask_prediction, d=d)
+                keypoint_accuracy = keypointPredictionAccuracy(graph, keypoint_prediction, pts, labels, 5.0)
 
                 image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', getActivationImage(keypoint_mask_prediction)))
                 for i in [1.0,2.0,3.0,5.0,8.0]:
                     scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_prediction, pts, labels, i)
                     ))
-                
                 
         #######################################################
         ####################### LOSSES ########################
@@ -447,6 +485,8 @@ def main(args):
                     mask_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=mask_head, labels=tf.to_float(masks)))
                 with tf.variable_scope('KeypointLoss'):
                     keypoint_loss = tf.reduce_mean(keypoint_CrossEntropyLoss(graph, keypoint_head, kpt_masks, labels, L=L))
+                    # keypoint_loss = tf.reduce_mean(keypoint_SquaredErrorLoss(graph, tf.nn.sigmoid(keypoint_head), kpt_masks, labels, L=L))
+                    # keypoint_loss = tf.reduce_mean(keypoint_TargetedCrossEntropyLoss(graph, keypoint_head, kpt_masks, labels, L=L))
             
                 # mask_loss_summary = tf.summary.scalar('MaskLoss', mask_loss)
                 scalar_summary_list.append(tf.summary.scalar('Head - mask loss', mask_loss, collections=None))
@@ -466,8 +506,17 @@ def main(args):
         #######################################################
 
         with tf.variable_scope('Optimizers'):
-            head_optimizer = tf.train.RMSPropOptimizer(learning_rate1)
-            head_train_op = head_optimizer.minimize(total_loss, global_step=None, var_list=head_variables, gate_gradients=tf.train.RMSPropOptimizer.GATE_NONE)
+            global_step = tf.Variable(0, trainable=False, name='global_step')
+            # Exponential decay learning schedule
+            learning_rate = tf.train.exponential_decay(
+                learning_rate=args.learning_rate1, 
+                global_step=global_step, 
+                decay_steps=args.decay_steps, 
+                decay_rate=args.decay_rate, 
+                staircase=True
+                )
+            head_optimizer = tf.train.RMSPropOptimizer(learning_rate)
+            head_train_op = head_optimizer.minimize(total_loss, global_step=global_step, var_list=head_variables, gate_gradients=tf.train.RMSPropOptimizer.GATE_NONE)
         
         # RMSProp optimizer uses "slot" variables for maintaining the running average of weight updates. It must therefore be initialized 
         optimizer_variables = tf.contrib.framework.get_variables('Optimizers')
@@ -480,67 +529,62 @@ def main(args):
         image_summary = tf.summary.merge(image_summary_list, collections=None, name="Image Summaries")
         scalar_summary = tf.summary.merge(scalar_summary_list, collections=None, name="Scalar Summaries")
 
+        # Saver to save graph to checkpoint
+        head_saver = tf.train.Saver(var_list=head_variables, max_to_keep=5)
+        resnet_saver = tf.train.Saver(var_list=backbone_variables,max_to_keep=5)
+
         # Finalize default graph - THIS SEEMS TO PREVENT ADDING A FILEWRITER LATER
         tf.get_default_graph().finalize()
 
-        # Train!
+        #######################################################
+        ######################## TRAIN ########################
+        #######################################################
         with tf.Session(graph=graph) as sess:
             # file writer to save graph for Tensorboard
             file_writer = tf.summary.FileWriter('/tmp/KyleNet/1')
             file_writer.add_graph(sess.graph)
-            # initialize variables
             print("Initializing backbone variables...")
             init_fn(sess) # pretrained backbone variables
             print("Initializing head variables...")
             sess.run(init_head) # head variables
             print("Initializing optimizer variables...\n")
             sess.run(init_optimizer)
-            # initialize dataset iterator
-            # sess.run(train_init_op)
 
             print("Beginning Training...")
+
+            #############################################################
+            ###################### TRAINING ROUND 1 #####################
+            #############################################################
             for epoch in range(args.num_epochs1):
                 # Run an epoch over the training data.
                 print('### Starting epoch {}/{} ####################'.format(epoch + 1, args.num_epochs1))
                 sess.run(train_init_op) # initialize the iterator with the training set.
-
                 batch = 1
-                batches_per_epoch = 3
                 while True:
                     try:
                         total_loss_val, _ = sess.run([total_loss, head_train_op], {is_training: True})
-                        print('----- Total loss for batch {}: {}'.format(batch, total_loss_val))
+                        print('----- Total loss for batch {}: {:0>5}'.format(batch, total_loss_val))
                         batch += 1
                     except tf.errors.OutOfRangeError:
                         break
-
                 # reinitialize dataset to run accuracy checks and generate summaries for visualization in Tensorboard
                 sess.run(train_init_op)
-                if epoch % 5 == 0:
+                if epoch % 10 == 0:
                     image_summ, scalar_summ = sess.run([image_summary, scalar_summary],{is_training: False})
                     file_writer.add_summary(image_summ, global_step=epoch)
                     file_writer.add_summary(scalar_summ, global_step=epoch)
                 else:
                     scalar_summ = sess.run(scalar_summary, {is_training: False})
                     file_writer.add_summary(scalar_summ, global_step=epoch)
-
+                if epoch % 10 == 0:
+                    head_saver.save(sess, 'checkpoints/MegaNet', global_step=epoch)
 
                 # # Check accuracy on the train and val sets every epoch.
-                # train_acc = check_accuracy(sess, correct_prediction, is_training, train_init_op)
-                # val_acc = check_accuracy(sess, correct_prediction, is_training, val_init_op)
-                # print('Train accuracy: %f' % train_acc)
-                # print('Val accuracy: %f\n' % val_acc)
+                mask_train_acc, kpt_train_acc = check_accuracy(sess, mask_accuracy, keypoint_accuracy, is_training, train_init_op)
+                mask_val_acc, kpt_val_acc = check_accuracy(sess, mask_accuracy, keypoint_accuracy, is_training, val_init_op)
+                print('Train accuracy ---- Mask: {:0>5}, Keypoints_5: {:0>5}'.format(mask_train_acc,kpt_train_acc))
+                print('  Val accuracy ---- Mask: {:0>5}, Keypoints_5: {:0>5}'.format(mask_val_acc,kpt_val_acc))
 
-
-            # run some summaries to look at in tensorboard
-            # visualization_summaries = sess.run(image_summary_list,{is_training: False})
-            # file_writer.add_summary(visualization_summaries, global_step=1)
-
-            # keypoint_masks = sess.run(kpt_masks, {is_training: False})
-
-            # plt.figure()
-            # plt.imshow(keypoint_masks[0][:,:,0])
-            # plt.show()
 
             print("Finished")
             return
