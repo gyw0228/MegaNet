@@ -38,6 +38,7 @@ parser.add_argument('--decay_rate', default=0.8, type=float)
 parser.add_argument('--decay_steps', default=50000, type=float)
 parser.add_argument('--checkpoint_every', default=5, type=int) # save checkpoint 5 epochs
 parser.add_argument('--summary_every', default=1000, type=int) # summaries per batch
+parser.add_argument('--save_path', default='checkpoints/MegaNet', type=str)
 
 HEAD_SCOPE = 'Head'
 
@@ -63,7 +64,7 @@ def check_accuracy(sess, mask_accuracy, keypoint_accuracy, is_training, dataset_
 
     return epoch_mask_accuracy, epoch_kpt_accuracy
 
-def keypoint_CrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
+def keypoint_SigmoidCrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
     """
     heat_maps = predictions from network
     keypoints (N,17,2) = actual keypoint locations
@@ -73,6 +74,39 @@ def keypoint_CrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=
         losses = tf.nn.sigmoid_cross_entropy_with_logits(logits=prediction_maps,labels=keypoint_masks)
         labels = tf.reshape(labels,[-1,1,1,17])
         losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
+        
+        return losses
+
+def keypoint_SoftmaxCrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, scope="keypointLoss"):
+    """
+    heat_maps = predictions from network
+    keypoints (N,17,2) = actual keypoint locations
+    labels (N,17,1) = 0 if invalid, 1 if occluded, 2 if valid
+    """
+    with graph.as_default():
+        map_shape = prediction_maps.shape.as_list()
+        flat_shape = (-1,1,map_shape[1]*map_shape[2],map_shape[3])
+        pred_flat = tf.reshape(prediction_maps, flat_shape)
+        masks_flat = tf.reshape(keypoint_masks, flat_shape)
+        # softmax over dimension 1
+        losses = tf.nn.softmax_cross_entropy_with_logits(labels=masks_flat,logits=pred_flat,dim=2)
+        labels = tf.reshape(labels,[-1,1,1,17])
+        losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
+        
+        return losses
+def mask_SoftmaxCrossEntropyLoss(graph, mask_prediction, mask_true, scope="maskLoss"):
+    """
+    heat_maps = predictions from network
+    keypoints (N,17,2) = actual keypoint locations
+    labels (N,17,1) = 0 if invalid, 1 if occluded, 2 if valid
+    """
+    with graph.as_default():
+        map_shape = mask_prediction.shape.as_list()
+        flat_shape = (-1,1,map_shape[1]*map_shape[2],map_shape[3])
+        pred_flat = tf.reshape(mask_prediction, flat_shape)
+        masks_flat = tf.reshape(mask_true, flat_shape)
+        # softmax over dimension 1
+        losses = tf.nn.softmax_cross_entropy_with_logits(labels=masks_flat,logits=pred_flat,dim=2)
         
         return losses
 
@@ -467,6 +501,8 @@ def main(args):
                 scalar_summary_list.append(tf.summary.scalar('Head - mask accuracy', mask_accuracy))
 
             with tf.variable_scope('KeypointsPrediction'):
+                # keypoint_head_flat = tf.reshape(keypoint_head, [-1,key])
+
                 keypoint_mask_prediction = tf.nn.sigmoid(keypoint_head)
                 keypoint_mask_prediction = tf.to_float(tf.greater_equal(keypoint_mask_prediction, KP_THRESHOLD))
                 keypoint_prediction = KeypointPrediction(graph, keypoint_mask_prediction, d=d)
@@ -484,9 +520,9 @@ def main(args):
 
             with tf.variable_scope('Losses'):
                 with tf.variable_scope('SegmentationLoss'):
-                    mask_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=mask_head, labels=tf.to_float(masks)))
-                with tf.variable_scope('KeypointLoss'):
-                    keypoint_loss = tf.reduce_mean(keypoint_CrossEntropyLoss(graph, keypoint_head, kpt_masks, labels, L=L))
+                    mask_loss = tf.reduce_mean(mask_SoftmaxCrossEntropyLoss(graph, mask_head, masks))
+                with tf.variable_scope('KeypointLoss'):               
+                    keypoint_loss = tf.reduce_mean(keypoint_SoftmaxCrossEntropyLoss(graph, keypoint_head, kpt_masks, labels))
                     # keypoint_loss = tf.reduce_mean(keypoint_SquaredErrorLoss(graph, tf.nn.sigmoid(keypoint_head), kpt_masks, labels, L=L))
                     # keypoint_loss = tf.reduce_mean(keypoint_TargetedCrossEntropyLoss(graph, keypoint_head, kpt_masks, labels, L=L))
             
@@ -578,7 +614,7 @@ def main(args):
                         break
 
                 if epoch % args.checkpoint_every == 0:
-                    head_saver.save(sess, 'checkpoints/MegaNet', global_step=tf.train.global_step(sess, global_step))
+                    head_saver.save(sess, args.save_path, global_step=tf.train.global_step(sess, global_step))
 
                 # # Check accuracy on the train and val sets every epoch.
                 mask_train_acc, kpt_train_acc = check_accuracy(sess, mask_accuracy, keypoint_accuracy, is_training, train_init_op)
