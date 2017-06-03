@@ -36,6 +36,8 @@ parser.add_argument('--learning_rate2', default=1e-5, type=float)
 parser.add_argument('--dropout_keep_prob', default=0.5, type=float)
 parser.add_argument('--decay_rate', default=0.8, type=float)
 parser.add_argument('--decay_steps', default=50000, type=float)
+parser.add_argument('--checkpoint_every', default=5, type=int) # save checkpoint 5 epochs
+parser.add_argument('--summary_every', default=1000, type=int) # summaries per batch
 
 HEAD_SCOPE = 'Head'
 
@@ -562,22 +564,21 @@ def main(args):
                 batch = 1
                 while True:
                     try:
-                        total_loss_val, _ = sess.run([total_loss, head_train_op], {is_training: True})
-                        print('----- Total loss for batch {}: {:0>5}'.format(batch, total_loss_val))
+                        kp_loss, m_loss, _ = sess.run([keypoint_loss, mask_loss, head_train_op], {is_training: True})
+                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}, Mask Loss: {:0>5}'.format(batch, kp_loss, m_loss))
+                        if batch % args.summary_every == 0:
+                            image_summ, scalar_summ = sess.run([image_summary, scalar_summary],{is_training: False})
+                            file_writer.add_summary(image_summ, global_step=tf.train.global_step(sess, global_step))
+                            file_writer.add_summary(scalar_summ, global_step=tf.train.global_step(sess, global_step))
+                        else:
+                            scalar_summ = sess.run(scalar_summary, {is_training: False})
+                            file_writer.add_summary(scalar_summ, global_step=tf.train.global_step(sess, global_step))
                         batch += 1
                     except tf.errors.OutOfRangeError:
                         break
-                # reinitialize dataset to run accuracy checks and generate summaries for visualization in Tensorboard
-                sess.run(train_init_op)
-                if epoch % 10 == 0:
-                    image_summ, scalar_summ = sess.run([image_summary, scalar_summary],{is_training: False})
-                    file_writer.add_summary(image_summ, global_step=epoch)
-                    file_writer.add_summary(scalar_summ, global_step=epoch)
-                else:
-                    scalar_summ = sess.run(scalar_summary, {is_training: False})
-                    file_writer.add_summary(scalar_summ, global_step=epoch)
-                if epoch % 10 == 0:
-                    head_saver.save(sess, 'checkpoints/MegaNet', global_step=epoch)
+
+                if epoch % args.checkpoint_every == 0:
+                    head_saver.save(sess, 'checkpoints/MegaNet', global_step=tf.train.global_step(sess, global_step))
 
                 # # Check accuracy on the train and val sets every epoch.
                 mask_train_acc, kpt_train_acc = check_accuracy(sess, mask_accuracy, keypoint_accuracy, is_training, train_init_op)
