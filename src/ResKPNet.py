@@ -354,7 +354,14 @@ def main(args):
 
             pt_masks = tf.multiply(tf.divide(tf.constant(1.0),tf.add(d1,d2)+L),L)
             return image, mask, pt_masks, pts, labels
-        
+        def generate_one_hot_keypoint_masks(image, mask, keypoints, labels, d=d):
+            pts = tf.reshape(keypoints,[1,2,17])
+            indices = tf.to_int32(pts)
+            kp_mask1 = tf.one_hot(depth=d,indices=indices[:,1,:],axis=0)
+            kp_mask2 = tf.one_hot(depth=d,indices=indices[:,0,:],axis=1)
+            kp_masks = tf.matmul(tf.transpose(kp_mask1,(2,0,1)),tf.transpose(kp_mask2,(2,0,1)))
+            kp_masks = tf.transpose(kp_masks,(1,2,0))
+            return image, mask, kp_masks, pts, labels
         def softmax_keypoint_masks(kpt_masks, d=56):
             return tf.reshape(tf.nn.softmax(tf.reshape(kpt_masks, [-1,d**2,17]),dim=1),[-1,d,d,17])
 
@@ -379,7 +386,7 @@ def main(args):
                 lambda filename, imgID: tf.py_func(extract_annotations_train, [filename, imgID], [filename.dtype, tf.int64, tf.int64, tf.uint8]))
             train_dataset = train_dataset.map(preprocess_image_tf)
             train_dataset = train_dataset.map(scaleDownMaskAndKeypoints)
-            train_dataset = train_dataset.map(generate_keypoint_masks)
+            train_dataset = train_dataset.map(generate_one_hot_keypoint_masks)
             train_dataset = train_dataset.shuffle(buffer_size=10000)
             train_dataset = train_dataset.batch(BATCH_SIZE)
 
@@ -391,7 +398,7 @@ def main(args):
                 lambda filename, imgID: tf.py_func(extract_annotations_val,[filename, imgID],[filename.dtype, tf.int64, tf.int64, tf.uint8]))
             val_dataset = val_dataset.map(preprocess_image_tf)
             val_dataset = val_dataset.map(scaleDownMaskAndKeypoints)
-            val_dataset = val_dataset.map(generate_keypoint_masks)
+            val_dataset = val_dataset.map(generate_one_hot_keypoint_masks)
             val_dataset = val_dataset.shuffle(buffer_size=10000)
             val_dataset = val_dataset.batch(BATCH_SIZE)
 
@@ -475,10 +482,10 @@ def main(args):
                 b4 = b4[:,1:-1,1:-1,:]
 
             with tf.variable_scope('BatchNorm'):
-                b1 = tf.layers.batch_normalization(b1,axis=2)
-                b2 = tf.layers.batch_normalization(b2,axis=2)
-                b3 = tf.layers.batch_normalization(b3,axis=2)
-                b4 = tf.layers.batch_normalization(b4,axis=2)
+                b1 = tf.layers.batch_normalization(b1,axis=3)
+                b2 = tf.layers.batch_normalization(b2,axis=3)
+                b3 = tf.layers.batch_normalization(b3,axis=3)
+                b4 = tf.layers.batch_normalization(b4,axis=3)
 
             with tf.variable_scope('Funnel'):
                 head = tf.concat([b1,b2,b3,b4],axis=3)

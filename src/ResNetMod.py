@@ -27,43 +27,38 @@ parser.add_argument('--image_val_dir', default='val2014')
 parser.add_argument('--image_test_dir', default='test2015')
 
 parser.add_argument('--model_path', default='checkpoints/resnet_v2_50.ckpt', type=str)
-parser.add_argument('--batch_size', default=10, type=int)
+parser.add_argument('--batch_size', default=2, type=int)
 parser.add_argument('--small_dataset', default=True, type=bool)
 parser.add_argument('--num_workers', default=4, type=int)
 parser.add_argument('--num_epochs1', default=10, type=int)
 parser.add_argument('--num_epochs2', default=10, type=int)
 parser.add_argument('--learning_rate1', default=1e-3, type=float)
 parser.add_argument('--learning_rate2', default=1e-5, type=float)
-parser.add_argument('--dropout_keep_prob', default=0.5, type=float)
-parser.add_argument('--decay_rate', default=0.8, type=float)
+parser.add_argument('--decay_rate', default=0.01, type=float)
 parser.add_argument('--decay_steps', default=50000, type=float)
-parser.add_argument('--checkpoint_every', default=5, type=int) # save checkpoint 5 epochs
-parser.add_argument('--summary_every', default=1, type=int) # summaries per batch
+parser.add_argument('--checkpoint_every', default=50, type=int) # save checkpoint 5 epochs
+parser.add_argument('--summary_every', default=1000, type=int) # batches per summary
 parser.add_argument('--save_path', default='checkpoints/MegaNet', type=str)
+parser.add_argument('--log_path', default='/tmp/KyleNet', type=str)
 
-HEAD_SCOPE = 'Head'
-
-def check_accuracy(sess, mask_accuracy, keypoint_accuracy, is_training, dataset_init_op, MAX_BATCHES=50):
+def check_accuracy(sess, keypoint_accuracy, is_training, dataset_init_op, MAX_BATCHES=50):
     """
     Check the accuracy of the model on either train or val (depending on dataset_init_op).
     """
     # Initialize the correct dataset
     sess.run(dataset_init_op)
     evals = 0
-    epoch_mask_accuracy = 0
     epoch_kpt_accuracy = 0
     while True and evals < MAX_BATCHES:
         try:
-            mask_acc, kpt_acc = sess.run([mask_accuracy, keypoint_accuracy], {is_training: False})
-            epoch_mask_accuracy += mask_acc
+            kpt_acc = sess.run(keypoint_accuracy, {is_training: False})
             epoch_kpt_accuracy += kpt_acc
             evals += 1
         except tf.errors.OutOfRangeError:
             break
-    epoch_mask_accuracy = float(epoch_mask_accuracy/evals)
     epoch_kpt_accuracy = float(epoch_kpt_accuracy/evals)
 
-    return epoch_mask_accuracy, epoch_kpt_accuracy
+    return epoch_kpt_accuracy
 
 def keypoint_SigmoidCrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
     """
@@ -213,8 +208,8 @@ def main(args):
         NUM_KEYPOINTS = 17
         BATCH_SIZE = args.batch_size
         L = 5.0 # keypoint effective radius
-        D = 225 # image height and width
-        d = 57 # evaluation height and width (for mask and keypoint masks)
+        D = 224 # image height and width
+        d = 56 # evaluation height and width (for mask and keypoint masks)
 
         MASK_THRESHOLD = 0.5 # threshold for on/off prediction (in mask and keypoint masks)
         KP_THRESHOLD = 0.5 # threshold for on/off prediction (in mask and keypoint masks)
@@ -354,9 +349,23 @@ def main(args):
 
             pt_masks = tf.multiply(tf.divide(tf.constant(1.0),tf.add(d1,d2)+L),L)
             return image, mask, pt_masks, pts, labels
+        def generate_one_hot_keypoint_masks(image, mask, keypoints, labels, d=d):
+            pts = tf.reshape(keypoints,[1,2,17])
+            indices = tf.to_int32(pts)
+            kp_mask1 = tf.one_hot(depth=d,indices=indices[:,1,:],axis=0)
+            kp_mask2 = tf.one_hot(depth=d,indices=indices[:,0,:],axis=1)
+            kp_masks = tf.matmul(tf.transpose(kp_mask1,(2,0,1)),tf.transpose(kp_mask2,(2,0,1)))
+            kp_masks = tf.transpose(kp_masks,(1,2,0))
+            return image, mask, kp_masks, pts, labels
+
         
-        def softmax_keypoint_masks(kpt_masks, d=56):
+        def softmax_keypoint_masks(kpt_masks, d=d):
             return tf.reshape(tf.nn.softmax(tf.reshape(kpt_masks, [-1,d**2,17]),dim=1),[-1,d,d,17])
+        def bilinear_filter(channels_in,channels_out):
+            f = tf.multiply(tf.constant([0.5, 1.0, 0.5],shape=[3,1]),tf.constant([0.5, 1.0, 0.5],shape=[1,3]))
+            f = tf.stack([f for i in range(channels_out)],axis=2)
+            f = tf.stack([f for i in range(channels_in)],axis=3)
+            return f
 
          
         #######################################################
@@ -365,6 +374,7 @@ def main(args):
 
         image_summary_list = []
         scalar_summary_list = []
+        histogram_summary_list = []
 
         #######################################################
         ################### PREPARE DATASET ###################
@@ -379,7 +389,7 @@ def main(args):
                 lambda filename, imgID: tf.py_func(extract_annotations_train, [filename, imgID], [filename.dtype, tf.int64, tf.int64, tf.uint8]))
             train_dataset = train_dataset.map(preprocess_image_tf)
             train_dataset = train_dataset.map(scaleDownMaskAndKeypoints)
-            train_dataset = train_dataset.map(generate_keypoint_masks)
+            train_dataset = train_dataset.map(generate_one_hot_keypoint_masks)
             train_dataset = train_dataset.shuffle(buffer_size=10000)
             train_dataset = train_dataset.batch(BATCH_SIZE)
 
@@ -391,7 +401,7 @@ def main(args):
                 lambda filename, imgID: tf.py_func(extract_annotations_val,[filename, imgID],[filename.dtype, tf.int64, tf.int64, tf.uint8]))
             val_dataset = val_dataset.map(preprocess_image_tf)
             val_dataset = val_dataset.map(scaleDownMaskAndKeypoints)
-            val_dataset = val_dataset.map(generate_keypoint_masks)
+            val_dataset = val_dataset.map(generate_one_hot_keypoint_masks)
             val_dataset = val_dataset.shuffle(buffer_size=10000)
             val_dataset = val_dataset.batch(BATCH_SIZE)
 
@@ -417,13 +427,8 @@ def main(args):
         resnet_v2 = tf.contrib.slim.nets.resnet_v2
         with slim.arg_scope(resnet_v2.resnet_arg_scope()):
             logits, endpoints = resnet_v2.resnet_v2_50(
-                inputs=images,
-                num_classes=10,
-                is_training=is_training,
-                reuse=None,
-                output_stride=16,
-                scope='resnet_v2_50'
-                )
+                inputs=images, num_classes=2, is_training=is_training, reuse=None,
+                output_stride=16, scope='resnet_v2_50')
 
         # Model Path to ResNet v2 50 checkpoint
         model_path = args.model_path
@@ -432,13 +437,12 @@ def main(args):
         backbone_variables = tf.contrib.framework.get_variables_to_restore(exclude=['resnet_v2_50/postnorm','resnet_v2_50/logits'])
         init_fn = tf.contrib.framework.assign_from_checkpoint_fn(model_path, backbone_variables) # Call to load pretrained weights
 
-        with tf.variable_scope('resnet_v2_50'):
+        # with tf.variable_scope('resnet_v2_50'):
+        image_summary_list.append(tf.summary.image(
+            'ResNet - layer1 weights',getFilterImage(tf.contrib.framework.get_variables('resnet_v2_50/conv1/weights'))))
+        for i in range(4):
             image_summary_list.append(tf.summary.image(
-                'ResNet - layer1 weights',getFilterImage(tf.contrib.framework.get_variables('resnet_v2_50/conv1/weights'))))
-            for i in range(4):
-                image_summary_list.append(tf.summary.image(
-                    'ResNet - block {}'.format(i+1), getActivationImage(endpoints['resnet_v2_50/block{}'.format(i+1)])
-                    ))
+                'ResNet - block {}'.format(i+1), getActivationImage(endpoints['resnet_v2_50/block{}'.format(i+1)])))
 
         # --------------------------------------------------- #
         # --------------- "Head" Architecture --------------- #
@@ -449,96 +453,77 @@ def main(args):
         block3 = endpoints['resnet_v2_50/block3']
         block4 = endpoints['resnet_v2_50/block4']
 
-        HEAD_SCOPE = 'NetworkHead'
+        HEAD_SCOPE='Head'
+        with tf.variable_scope('Head'):
+            with tf.variable_scope('block3_head'):
+                # initialize as bilinear upsampling
+                # input_shape=block3.shape.as_list()
+                # w3 = bilinear_filter(input_shape[3],128)
+                # histogram_summary_list.append(tf.summary.histogram('w3',w3))
+                # b3 = tf.nn.conv2d_transpose(block3,w3,output_shape=tf.constant(
+                #         [BATCH_SIZE,2*input_shape[1],2*input_shape[2],128]),strides=(1,2,2,1),padding='SAME')
+                # b3 = tf.layers.batch_normalization(b3,axis=3) # axis=3 --> IMPORTANT!!
+                # b3 = tf.nn.relu(b3)
+                b3 = tf.layers.conv2d_transpose(block3, 128, (2,2), (2,2), padding='SAME')
+                histogram_summary_list.append(tf.summary.histogram('b3',getActivationImage(b3)))
+                b3 = tf.layers.batch_normalization(b3,axis=3) # axis=3 --> IMPORTANT!!
+                b3 = tf.nn.relu(b3)
+                image_summary_list.append(tf.summary.image('b3',getActivationImage(b3)))
 
-        with tf.variable_scope(HEAD_SCOPE):
-            with tf.variable_scope('Layer1'):
-                b1 = tf.layers.conv2d(block1, 64, kernel_size=(3,3), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
-                b2 = tf.layers.conv2d(block2, 128, kernel_size=(3,3), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
-                b3 = tf.layers.conv2d(block3, 128, kernel_size=(1,1), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
-                b4 = tf.layers.conv2d(block4, 128, kernel_size=(1,1), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
+            with tf.variable_scope('block4_head'):
+                # input_shape=block4.shape.as_list()
+                # w4 = bilinear_filter(input_shape[3],128)
+                # histogram_summary_list.append(tf.summary.histogram('w4',w4))
+                # b4 = tf.nn.conv2d_transpose(block4,w4,output_shape=tf.constant(
+                #         [BATCH_SIZE,2*input_shape[1],2*input_shape[2],128]),strides=(1,2,2,1),padding='SAME')
+                # b4 = tf.layers.batch_normalization(b4,axis=3) # axis=3 --> IMPORTANT!!
+                # b4 = tf.nn.relu(b4)
+                b4 = tf.layers.conv2d_transpose(block4, 128, (2,2), (2,2), padding='SAME')
+                histogram_summary_list.append(tf.summary.histogram('b4',getActivationImage(b4)))
+                b4 = tf.layers.batch_normalization(b4,axis=3) # axis=3 --> IMPORTANT!!
+                b4 = tf.nn.relu(b4)
+                image_summary_list.append(tf.summary.image('b4',getActivationImage(b4)))
+                
+            with tf.variable_scope('funnel'):
+                net = tf.concat([b3,b4],axis=3)
+                # input_shape=net.shape.as_list()
+                # w = bilinear_filter(input_shape[3],128)
+                # histogram_summary_list.append(tf.summary.histogram('w',w))
+                # net = tf.nn.conv2d_transpose(net,w,output_shape=tf.constant(
+                #         [BATCH_SIZE,2*input_shape[1],2*input_shape[2],128]),strides=(1,2,2,1),padding='SAME')
+                net = tf.layers.conv2d_transpose(net, 128, (2,2), (2,2), padding='SAME')
+                histogram_summary_list.append(tf.summary.histogram('pre-activation',net))
+                net = tf.layers.batch_normalization(net,axis=3) # axis=3 --> IMPORTANT!!
+                net = tf.nn.relu(net)
 
-                image_summary_list.append(tf.summary.image('Head - b1', getActivationImage(b1)))
-                image_summary_list.append(tf.summary.image('Head - b2', getActivationImage(b2)))
-                image_summary_list.append(tf.summary.image('Head - b3', getActivationImage(b3)))
-                image_summary_list.append(tf.summary.image('Head - b4', getActivationImage(b4)))
-
-            with tf.variable_scope('Layer2'):
-                b1 = tf.layers.conv2d(block1, 32, kernel_size=(3,3), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
-
-                b2 = tf.layers.conv2d_transpose(b2, 32, kernel_size=(3,3), strides=(2,2),padding='VALID',activation=None, kernel_initializer=X_INIT)
-                b3 = tf.layers.conv2d_transpose(b3, 64, kernel_size=(3,3), strides=(2,2),padding='VALID',activation=None, kernel_initializer=X_INIT)
-                b4 = tf.layers.conv2d_transpose(b4, 64, kernel_size=(3,3), strides=(2,2),padding='VALID',activation=None, kernel_initializer=X_INIT)
-                # Crop back down to 29x29
-                b2 = b2[:,1:-1,1:-1,:]
-                b3 = b3[:,1:-1,1:-1,:]
-                b4 = b4[:,1:-1,1:-1,:]
-
-            with tf.variable_scope('BatchNorm'):
-                b1 = tf.layers.batch_normalization(b1,axis=2)
-                b2 = tf.layers.batch_normalization(b2,axis=2)
-                b3 = tf.layers.batch_normalization(b3,axis=2)
-                b4 = tf.layers.batch_normalization(b4,axis=2)
-
-            with tf.variable_scope('Funnel'):
-                head = tf.concat([b1,b2,b3,b4],axis=3)
-                head = tf.layers.conv2d(head,64,(1,1),(1,1),'SAME',activation=tf.nn.relu,kernel_initializer=X_INIT)
-
-            with tf.variable_scope('MaskHead'):
-                mask_head = tf.layers.conv2d_transpose(head, 32, (3,3), (2,2), padding='VALID', activation=tf.nn.relu, kernel_initializer=X_INIT)
-                mask_head = mask_head[:,1:-1,1:-1,:]
-                mask_head = tf.layers.conv2d(mask_head, 16, (3,3), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
-                mask_head = tf.layers.conv2d(mask_head, 1, (1,1), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
-
-            with tf.variable_scope('KeypointHead'):
-                keypoint_head = tf.layers.conv2d_transpose(head, 32, (3,3), (2,2), padding='VALID', activation=tf.nn.relu, kernel_initializer=X_INIT)
-                keypoint_head = keypoint_head[:,1:-1,1:-1,:]
-                keypoint_head = tf.layers.conv2d(keypoint_head, 32, (3,3), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
-                keypoint_head = tf.layers.conv2d(keypoint_head, 17, (1,1), (1,1), padding='SAME', activation=None, kernel_initializer=X_INIT)
+            with tf.variable_scope('logits'):
+                logits = tf.layers.conv2d(net,17,(1,1),(1,1),kernel_initializer=X_INIT)
+                histogram_summary_list.append(tf.summary.histogram('logits',logits))
+                image_summary_list.append(tf.summary.image('logits',getActivationImage(logits)))
 
         ########## Prediction and Accuracy Checking ########### 
 
-            with tf.variable_scope('MaskPrediction'):
-                mask_prediction = tf.nn.sigmoid(mask_head)
-                mask_prediction = tf.to_float(tf.greater_equal(mask_prediction, MASK_THRESHOLD))
-                mask_accuracy = MaskAccuracy(graph, mask_prediction, masks)
+            with tf.variable_scope('predictions'):
+                keypoint_mask_predictions = softmax_keypoint_masks(logits, d=d)
+                keypoint_predictions = KeypointPrediction(graph,keypoint_mask_predictions,d=d)
+                keypoint_accuracy = keypointPredictionAccuracy(graph,keypoint_predictions,pts,labels,threshold=4.0)
 
-                image_summary_list.append(tf.summary.image('Head - mask prediction', mask_prediction))
-                scalar_summary_list.append(tf.summary.scalar('Head - mask accuracy', mask_accuracy))
-
-            with tf.variable_scope('KeypointsPrediction'):
-                # keypoint_head_flat = tf.reshape(keypoint_head, [-1,key])
-
-                keypoint_mask_prediction = tf.nn.sigmoid(keypoint_head)
-                keypoint_mask_prediction = tf.to_float(tf.greater_equal(keypoint_mask_prediction, KP_THRESHOLD))
-                keypoint_prediction = KeypointPrediction(graph, keypoint_mask_prediction, d=d)
-                keypoint_accuracy = keypointPredictionAccuracy(graph, keypoint_prediction, pts, labels, 5.0)
-
-                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', getActivationImage(keypoint_mask_prediction)))
+                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', getActivationImage(keypoint_mask_predictions)))
                 for i in [1.0,2.0,3.0,5.0,8.0]:
                     scalar_summary_list.append(tf.summary.scalar(
-                        'Head - keypoint accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_prediction, pts, labels, i)
+                        'Head - keypoint accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_predictions, pts, labels, i)
                     ))
-                
+
         #######################################################
         ####################### LOSSES ########################
         #######################################################
 
-            with tf.variable_scope('Losses'):
-                with tf.variable_scope('SegmentationLoss'):
-                    mask_loss = tf.reduce_mean(mask_SoftmaxCrossEntropyLoss(graph, mask_head, masks))
-                with tf.variable_scope('KeypointLoss'):               
-                    keypoint_loss = tf.reduce_mean(keypoint_SoftmaxCrossEntropyLoss(graph, keypoint_head, kpt_masks, labels))
-                    # keypoint_loss = tf.reduce_mean(keypoint_SquaredErrorLoss(graph, tf.nn.sigmoid(keypoint_head), kpt_masks, labels, L=L))
-                    # keypoint_loss = tf.reduce_mean(keypoint_TargetedCrossEntropyLoss(graph, keypoint_head, kpt_masks, labels, L=L))
+            with tf.variable_scope('loss'):
+                keypoint_loss = tf.reduce_mean(keypoint_SoftmaxCrossEntropyLoss(graph,logits,kpt_masks,labels))
+                total_loss = keypoint_loss
+
+                scalar_summary_list.append(tf.summary.scalar('loss', total_loss))
             
-                # mask_loss_summary = tf.summary.scalar('MaskLoss', mask_loss)
-                scalar_summary_list.append(tf.summary.scalar('Head - mask loss', mask_loss, collections=None))
-                # keypoint_loss_summary = tf.summary.scalar('KeypointLoss', keypoint_loss)
-                scalar_summary_list.append(tf.summary.scalar('Head - keypoint loss', keypoint_loss, collections=None))
-
-                total_loss = tf.add_n([mask_loss, keypoint_loss],name='TotalLoss')
-
         # Call to initialize Head Variables from scratch
         head_variables = tf.contrib.framework.get_variables(HEAD_SCOPE)
         init_head = tf.variables_initializer(head_variables, 'init_head')
@@ -570,12 +555,13 @@ def main(args):
         ###################### SUMMARIES ######################
         #######################################################
 
-        image_summary = tf.summary.merge(image_summary_list, collections=None, name="Image Summaries")
-        scalar_summary = tf.summary.merge(scalar_summary_list, collections=None, name="Scalar Summaries")
+        image_summary = tf.summary.merge(image_summary_list, collections=None, name="Image_Summaries")
+        scalar_summary = tf.summary.merge(scalar_summary_list, collections=None, name="Scalar_Summaries")
+        histogram_summary = tf.summary.merge(histogram_summary_list, collections=None, name="Histogram_summaries")
 
         # Saver to save graph to checkpoint
         head_saver = tf.train.Saver(var_list=head_variables, max_to_keep=5)
-        resnet_saver = tf.train.Saver(var_list=backbone_variables,max_to_keep=5)
+        # resnet_saver = tf.train.Saver(var_list=backbone_variables,max_to_keep=5)
 
         # Finalize default graph - THIS SEEMS TO PREVENT ADDING A FILEWRITER LATER
         tf.get_default_graph().finalize()
@@ -585,7 +571,16 @@ def main(args):
         #######################################################
         with tf.Session(graph=graph) as sess:
             # file writer to save graph for Tensorboard
-            file_writer = tf.summary.FileWriter('/tmp/KyleNet/1')
+            log_path = args.log_path
+            i = 0
+            while True:
+                if os.path.isdir('{}/{}'.format(log_path,i)):
+                    i += 1
+                else:
+                    log_path = '{}/{}'.format(log_path,i)
+                    break
+
+            file_writer = tf.summary.FileWriter(args.log_path)
             file_writer.add_graph(sess.graph)
             print("Initializing backbone variables...")
             init_fn(sess) # pretrained backbone variables
@@ -606,12 +601,13 @@ def main(args):
                 batch = 1
                 while True:
                     try:
-                        kp_loss, m_loss, _ = sess.run([keypoint_loss, mask_loss, head_train_op], {is_training: True})
-                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}, Mask Loss: {:0>5}'.format(batch, kp_loss, m_loss))
+                        kp_loss, _ = sess.run([keypoint_loss, head_train_op], {is_training: True})
+                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch, kp_loss))
                         if batch % args.summary_every == 0:
-                            image_summ, scalar_summ = sess.run([image_summary, scalar_summary],{is_training: False})
+                            image_summ, scalar_summ, histogram_summ = sess.run([image_summary, scalar_summary, histogram_summary],{is_training: False})
                             file_writer.add_summary(image_summ, global_step=tf.train.global_step(sess, global_step))
                             file_writer.add_summary(scalar_summ, global_step=tf.train.global_step(sess, global_step))
+                            file_writer.add_summary(histogram_summ, global_step=tf.train.global_step(sess, global_step))
                         else:
                             scalar_summ = sess.run(scalar_summary, {is_training: False})
                             file_writer.add_summary(scalar_summ, global_step=tf.train.global_step(sess, global_step))
@@ -623,11 +619,10 @@ def main(args):
                     head_saver.save(sess, args.save_path, global_step=tf.train.global_step(sess, global_step))
 
                 # # Check accuracy on the train and val sets every epoch.
-                mask_train_acc, kpt_train_acc = check_accuracy(sess, mask_accuracy, keypoint_accuracy, is_training, train_init_op)
-                mask_val_acc, kpt_val_acc = check_accuracy(sess, mask_accuracy, keypoint_accuracy, is_training, val_init_op)
-                print('Train accuracy ---- Mask: {:0>5}, Keypoints_5: {:0>5}'.format(mask_train_acc,kpt_train_acc))
-                print('  Val accuracy ---- Mask: {:0>5}, Keypoints_5: {:0>5}'.format(mask_val_acc,kpt_val_acc))
-
+                kpt_train_acc = check_accuracy(sess, keypoint_accuracy, is_training, train_init_op)
+                kpt_val_acc = check_accuracy(sess, keypoint_accuracy, is_training, val_init_op)
+                print('Train accuracy ---- Keypoints_5: {:0>5}'.format(kpt_train_acc))
+                print('  Val accuracy ---- Keypoints_5: {:0>5}'.format(kpt_val_acc))
 
             print("Finished")
             return

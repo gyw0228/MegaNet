@@ -368,8 +368,6 @@ def main(args):
 
         def softmax_keypoint_masks(kpt_masks, d=56):
             return tf.reshape(tf.nn.softmax(tf.reshape(kpt_masks, [-1,d**2,17]),dim=1),[-1,d,d,17])
-
-        
         #######################################################
         ################## SUMMARY DICTIONARY #################
         #######################################################
