@@ -366,6 +366,8 @@ def main(args):
             kp_masks = tf.transpose(kp_masks,(1,2,0))
             return image, mask, kp_masks, pts, labels
 
+        def softmax_keypoint_masks(kpt_masks, d=56):
+            return tf.reshape(tf.nn.softmax(tf.reshape(kpt_masks, [-1,d**2,17]),dim=1),[-1,d,d,17])
 
         
         #######################################################
@@ -463,11 +465,11 @@ def main(args):
             with tf.variable_scope('Unit1'): # Downsize
                 with tf.variable_scope('Layer1'): # Input: 56x56, Output: 28x28
                     head = tf.layers.conv2d(head, 256, kernel_size=(3,3), strides=(2,2), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
                 with tf.variable_scope('Layer2'): # Input: 28x28, Output: 14x14
                     head = tf.layers.conv2d(head, 256, kernel_size=(3,3), strides=(2,2), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    # head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    # head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
 
                     histogram_summary_list.append(tf.summary.histogram('layer1_output', head))
@@ -475,35 +477,35 @@ def main(args):
             with tf.variable_scope("Unit2"):
                 with tf.variable_scope('Layer1'): # Input: 14x14, Output: 14x14
                     head = tf.layers.conv2d(head, 512, kernel_size=(3,3), strides=(1,1), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
                 with tf.variable_scope('Layer2'): # Input: 14x14, Output: 14x14
                     head = tf.layers.conv2d(head, 512, kernel_size=(3,3), strides=(1,1), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
                 with tf.variable_scope('Layer3'): # Input: 14x14, Output: 14x14
                     head = tf.layers.conv2d(head, 512, kernel_size=(3,3), strides=(1,1), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
                 with tf.variable_scope('Layer4'): # Input: 14x14, Output: 14x14
                     head = tf.layers.conv2d(head, 512, kernel_size=(3,3), strides=(1,1), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
                 with tf.variable_scope('Layer5'): # Input: 14x14, Output: 14x14
                     head = tf.layers.conv2d(head, 512, kernel_size=(3,3), strides=(1,1), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
                 with tf.variable_scope('Layer6'): # Input: 14x14, Output: 14x14
                     head = tf.layers.conv2d(head, 512, kernel_size=(3,3), strides=(1,1), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
                 with tf.variable_scope('Layer7'): # Input: 14x14, Output: 14x14
                     head = tf.layers.conv2d(head, 512, kernel_size=(3,3), strides=(1,1), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
                 with tf.variable_scope('Layer8'): # Input: 14x14, Output: 14x14
                     head = tf.layers.conv2d(head, 512, kernel_size=(3,3), strides=(1,1), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv1')
-                    # head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    # head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
 
                     histogram_summary_list.append(tf.summary.histogram('layer2_output', head))
@@ -511,14 +513,16 @@ def main(args):
             with tf.variable_scope('Unit3'):
                 with tf.variable_scope('Layer1'): # Input: 14x14, Output: 28x28
                     head = tf.layers.conv2d_transpose(head, 256, kernel_size=(2,2), strides=(2,2), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='transpose_conv1')
-                    head = tf.layers.batch_normalization(head, axis=2, name='batchnorm')
+                    head = tf.layers.batch_normalization(head, axis=3, name='batchnorm')
                     head = tf.nn.relu(head)
                 with tf.variable_scope('Layer2'): # Input: 14x14, Output: 28x28
                     head = tf.layers.conv2d(head, 17, kernel_size=(3,3), strides=(1,1), padding='SAME',activation=None, kernel_initializer=W_INIT, bias_initializer=B_INIT, name='conv2')
                 with tf.variable_scope('Layer2'): # Input: 28x28, Output: 56x56
                     head = tf.image.resize_bilinear(head,[56,56],align_corners=True)
+                    head_predictions = softmax_keypoint_masks(head)
 
                     histogram_summary_list.append(tf.summary.histogram('layer3_output', head))
+                    image_summary_list.append(tf.summary.image('keypoint_predictions',getActivationImage(head_predictions)))
                 
         #######################################################
         ####################### LOSSES ########################
