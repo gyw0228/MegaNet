@@ -236,7 +236,7 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
         head = {}
         with tf.variable_scope('Hourglass'):
             with tf.variable_scope('base'):
-                base = tf.layers.conv2d(inputs, base_filters, (3,3),strides=(1,1),padding='SAME')
+                base = tf.layers.conv2d(inputs, base_filters, (3,3),strides=(1,1),padding='SAME',bias_initializer=tf.constant_initializer(0.01))
                 histogram_summary_list.append(tf.summary.histogram('base', base))
                 image_summary_list.append(tf.summary.image('base',getActivationImage(base, scale_up=True)))
                 base = tf.layers.batch_normalization(base,axis=3)
@@ -246,7 +246,7 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                 with tf.variable_scope('level_{}'.format(level+1)):
                     bridge_filters = base_filters*2**level
                     # Base - decrease size by factor of 2 for n
-                    base = tf.layers.conv2d(base,bridge_filters,(3,3),strides=(2,2),padding='SAME')
+                    base = tf.layers.conv2d(base,bridge_filters,(3,3),strides=(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
                     histogram_summary_list.append(tf.summary.histogram('level_{}_base'.format(level+1), base))
                     base = tf.layers.batch_normalization(base,axis=3)
                     base = tf.nn.relu(base)
@@ -254,7 +254,7 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                     # Bridge - maintain constant size
                     bridge = base
                     for i in range(num_levels - level):
-                        bridge = tf.layers.conv2d(bridge,bridge_filters,(3,3),strides=(1,1),padding='SAME')
+                        bridge = tf.layers.conv2d(bridge,bridge_filters,(3,3),strides=(1,1),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
                         histogram_summary_list.append(tf.summary.histogram('level_{}_bridge_{}'.format(level+1,i+1), bridge))
                         bridge = tf.layers.batch_normalization(bridge,axis=3)
                         bridge = tf.nn.relu(bridge)
@@ -266,7 +266,7 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                 # output = tf.image.resize_bilinear(ouput,size=2*output.shape[1:2])
                 out_filters = int(base_filters*2**(level-1))
 
-                output = tf.layers.conv2d_transpose(head[level],out_filters,(3,3),(2,2),padding='SAME')
+                output = tf.layers.conv2d_transpose(head[level],out_filters,(3,3),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
                 histogram_summary_list.append(tf.summary.histogram('level_{}_out'.format(level+1), output))
                 output = tf.layers.batch_normalization(output,axis=3) # HERE OR AFTER CONCAT???
                 output = tf.nn.relu(output) # HERE OR AFTER CONCAT???
@@ -505,7 +505,7 @@ def main(args):
         print("Defining Network architecture...\n")
         HEAD_SCOPE='network'
         with tf.variable_scope(HEAD_SCOPE):
-            net = tf.layers.conv2d(images,64,(3,3),(1,1),padding='SAME')
+            net = tf.layers.conv2d(images,64,(3,3),(1,1),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
             net = tf.layers.batch_normalization(net,axis=3)
             net = tf.nn.relu(net)
 
@@ -616,11 +616,11 @@ def main(args):
             #############################################################
             print('### Starting Epoch 0 - burn in with low learning rate')
             sess.run(train_init_op)
-            batch = 1
+            batch = 0
             while True:
                     try:
                         kp_loss, _ = sess.run([keypoint_loss, head_train_op], {is_training: True})
-                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch, kp_loss))
+                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, kp_loss))
                         if batch % args.summary_every == 0:
                             image_summ, scalar_summ, histogram_summ = sess.run([image_summary, scalar_summary, histogram_summary],{is_training: False})
                             file_writer.add_summary(image_summ, global_step=tf.train.global_step(sess, global_step))
@@ -640,11 +640,11 @@ def main(args):
                 # Run an epoch over the training data.
                 print('### Starting epoch {}/{} ####################'.format(epoch + 1, args.num_epochs1))
                 sess.run(train_init_op) # initialize the iterator with the training set.
-                batch = 1
+                batch = 0
                 while True:
                     try:
                         kp_loss, _ = sess.run([keypoint_loss, head_train_op], {is_training: True})
-                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch, kp_loss))
+                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, kp_loss))
                         if batch % args.summary_every == 0:
                             image_summ, scalar_summ, histogram_summ = sess.run([image_summary, scalar_summary, histogram_summary],{is_training: False})
                             file_writer.add_summary(image_summ, global_step=tf.train.global_step(sess, global_step))
