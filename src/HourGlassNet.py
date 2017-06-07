@@ -37,7 +37,7 @@ parser.add_argument('--learning_rate2', default=1e-5, type=float)
 parser.add_argument('--decay_rate', default=0.01, type=float)
 parser.add_argument('--decay_steps', default=50000, type=float)
 parser.add_argument('--checkpoint_every', default=50, type=int) # save checkpoint 5 epochs
-parser.add_argument('--summary_every', default=1000, type=int) # batches per summary
+parser.add_argument('--summary_every', default=200, type=int) # batches per summary
 parser.add_argument('--save_path', default='checkpoints/MegaNet', type=str)
 parser.add_argument('--log_path', default='/tmp/KyleNet', type=str)
 
@@ -545,7 +545,7 @@ def main(args):
             
             # Call to initialize Head Variables from scratch
             head_variables = tf.contrib.framework.get_variables(HEAD_SCOPE)
-            # init_head = tf.variables_initializer(head_variables, 'init_head')
+            init_head = tf.variables_initializer(head_variables, 'init_head')
 
         #######################################################
         ###################### SUMMARIES ######################
@@ -600,7 +600,7 @@ def main(args):
                     log_path = '{}/{}'.format(log_path,i)
                     break
 
-            file_writer = tf.summary.FileWriter(args.log_path)
+            file_writer = tf.summary.FileWriter(log_path)
             file_writer.add_graph(sess.graph)
             print("Initializing backbone variables...")
             # init_fn(sess) # pretrained backbone variables
