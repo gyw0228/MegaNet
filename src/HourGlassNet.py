@@ -177,7 +177,47 @@ def get_data(base_dir,image_dir,ann_file):
     return image_path, ann_path
     
 # define the path to the annotation file corresponding to the images you want to work with
+#######################################################
+#### VISUALIZATION TOOLS - WEIGHTS AND ACTIVATIONS ####
+#######################################################
+def highestPrimeFactorization(n):    
+    return [(i, n//i) for i in range(1, int(n**0.5) + 1) if n % i == 0][-1] 
 
+def getFilterImage(filters):
+    """
+    Takes as input a filter bank of size (1, H, W, C, D)
+    Returns: a tensor of size (1, sqrt(D)*H, sqrt(D)*H, C)
+    (This only really works for the first layer of filters with an image as input)
+    """
+    padded_filters = tf.pad(filters,tf.constant([[0,0],[1,0],[1,0],[0,0],[0,0]]),'CONSTANT')
+    filter_list = tf.unstack(padded_filters,axis=4)
+    H,W = highestPrimeFactorization(len(filter_list))
+    weight_strips = [tf.concat(filter_list[8*i:8*(i+1)],axis=1) for i in range(W)]
+    weight_image = tf.concat(weight_strips,axis=2)
+    return weight_image
+
+def getActivationImage(activations, scale_up=False):
+    """
+    Tiles an activation map into a square grayscale image
+    Takes as input an activation map of size (N, H, W, D)
+    Returns: a tensor of size (N, sqrt(D)*H, sqrt(D)*H, 1)
+    """
+    padded_activations = tf.pad(activations,tf.constant([[0,0],[1,0],[1,0],[0,0]]),'CONSTANT')
+    expanded_activations = tf.expand_dims(padded_activations,axis=3)
+    activations_list = tf.unstack(expanded_activations,axis=4)
+    H,W = highestPrimeFactorization(len(activations_list))
+    activation_strips = [tf.concat(activations_list[H*i:H*(i+1)],axis=1) for i in range(W)]
+    activation_image = tf.concat(activation_strips,axis=2)            
+    if scale_up:
+        activation_image = tf.divide(activation_image, tf.reduce_max(activation_image))
+
+    return activation_image
+
+
+
+#######################################################
+########### NETWORK DEFINITION FUNCTION(S) ############
+#######################################################
 def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_summary_list=None, image_summary_list=None, histogram_summary_list=None):
     """
     Returns:
@@ -198,6 +238,7 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
             with tf.variable_scope('base'):
                 base = tf.layers.conv2d(inputs, base_filters, (3,3),strides=(1,1),padding='SAME')
                 histogram_summary_list.append(tf.summary.histogram('base', base))
+                image_summary_list.append(tf.summary.image('base',getActivationImage(base, scale_up=True)))
                 base = tf.layers.batch_normalization(base,axis=3)
                 base = tf.nn.relu(base)
 
@@ -218,6 +259,7 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                         bridge = tf.layers.batch_normalization(bridge,axis=3)
                         bridge = tf.nn.relu(bridge)
                     head[level] = bridge
+                    image_summary_list.append(tf.summary.image('bridge_{}'.format(level+1), getActivationImage(bridge, scale_up=True)))
                     
             for level in reversed(range(num_levels)):
                 # resize_bilinear or upconv?
@@ -231,6 +273,13 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
 
                 if level > 0:
                     head[level-1] = tf.concat([head[level-1],output],axis=3)
+
+            variables = tf.trainable_variables()
+            endpoints = {}
+            for v in variables:
+                endpoints[v.name] = v
+
+            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/Hourglass/base/conv2d/kernel:0'],0))))
                 
             return head[0], scalar_summary_list, image_summary_list, histogram_summary_list
 
@@ -277,38 +326,6 @@ def main(args):
         learning_rate2 = args.learning_rate2
 
         #######################################################
-        #### VISUALIZATION TOOLS - WEIGHTS AND ACTIVATIONS ####
-        #######################################################
-        def highestPrimeFactorization(n):    
-            return [(i, n//i) for i in range(1, int(n**0.5) + 1) if n % i == 0][-1] 
-
-        def getFilterImage(filters):
-            """
-            Takes as input a filter bank of size (1, H, W, C, D)
-            Returns: a tensor of size (1, sqrt(D)*H, sqrt(D)*H, C)
-            (This only really works for the first layer of filtes with an image as input)
-            """
-            padded_filters = tf.pad(filters,tf.constant([[0,0],[1,0],[1,0],[0,0],[0,0]]),'CONSTANT')
-            filter_list = tf.unstack(padded_filters,axis=4)
-            H,W = highestPrimeFactorization(len(filter_list))
-            weight_strips = [tf.concat(filter_list[8*i:8*(i+1)],axis=1) for i in range(W)]
-            weight_image = tf.concat(weight_strips,axis=2)
-            return weight_image
-    
-        def getActivationImage(activations):
-            """
-            Tiles an activation map into a square grayscale image
-            Takes as input an activation map of size (N, H, W, D)
-            Returns: a tensor of size (N, sqrt(D)*H, sqrt(D)*H, 1)
-            """
-            padded_activations = tf.pad(activations,tf.constant([[0,0],[1,0],[1,0],[0,0]]),'CONSTANT')
-            expanded_activations = tf.expand_dims(padded_activations,axis=3)
-            activations_list = tf.unstack(expanded_activations,axis=4)
-            H,W = highestPrimeFactorization(len(activations_list))
-            activation_strips = [tf.concat(activations_list[H*i:H*(i+1)],axis=1) for i in range(W)]
-            activation_image = tf.concat(activation_strips,axis=2)
-            return activation_image
-        #######################################################
         ##### PRE-PROCESSING AND DATASET EXTRACTION TOOLS #####
         #######################################################
         def extract_annotations_train(filename, imgID, coco=train_coco):
@@ -340,6 +357,9 @@ def main(args):
             image_string = tf.read_file(filename)
             image_decoded = tf.image.decode_jpeg(image_string, channels=3)
             image = tf.cast(image_decoded, tf.float32)
+            
+            # subtract mean
+            image = tf.subtract(image, tf.reduce_mean(image))
 
             mask = tf.transpose([mask],[1,2,0])
             bbox_tensor = tf.to_float(bbox_tensor)
@@ -372,11 +392,12 @@ def main(args):
             pts = tf.multiply(pts,scale) # scale keypoints
 
             # set invalid pts to 0
-            inbounds = tf.less(pts,tf.constant(D,tf.float32))
-            inbounds = tf.multiply(tf.to_int32(inbounds), tf.to_int32(tf.greater(pts,0)))
-            pts = tf.multiply(pts,tf.to_float(inbounds))
+            valid = tf.less(pts,tf.constant(D,tf.float32))
+            valid = tf.multiply(tf.to_int32(valid), tf.to_int32(tf.greater(pts,0)))
+            pts = tf.multiply(pts,tf.to_float(valid))
             pts = tf.transpose(pts,[1,0])
             labels = tf.transpose(labels,[1,0])
+            labels = tf.to_float(tf.greater_equal(labels, 2))
 
             padded_image = tf.image.pad_to_bounding_box(cropped_image,tf.to_int32(dX[1]),tf.to_int32(dX[0]),
                                                         tf.to_int32(sideLength),tf.to_int32(sideLength))
@@ -469,7 +490,7 @@ def main(args):
             train_init_op = iterator.make_initializer(train_dataset)
             val_init_op = iterator.make_initializer(val_dataset)
 
-            image_summary_list.append(tf.summary.image('keypoint masks', getActivationImage(kpt_masks)))
+            image_summary_list.append(tf.summary.image('keypoint masks', getActivationImage(kpt_masks, scale_up=True)))
             image_summary_list.append(tf.summary.image('input images', images))
         
         #######################################################
@@ -506,7 +527,7 @@ def main(args):
                 keypoint_predictions = KeypointPrediction(graph,keypoint_mask_predictions,d=d)
                 keypoint_accuracy = keypointPredictionAccuracy(graph,keypoint_predictions,pts,labels,threshold=4.0)
 
-                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', getActivationImage(keypoint_mask_predictions)))
+                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', getActivationImage(keypoint_mask_predictions, scale_up=True)))
                 for i in [1.0,2.0,3.0,5.0,8.0]:
                     scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_predictions, pts, labels, i)
@@ -524,7 +545,7 @@ def main(args):
             
             # Call to initialize Head Variables from scratch
             head_variables = tf.contrib.framework.get_variables(HEAD_SCOPE)
-            init_head = tf.variables_initializer(head_variables, 'init_head')
+            # init_head = tf.variables_initializer(head_variables, 'init_head')
 
         #######################################################
         ###################### SUMMARIES ######################
@@ -551,6 +572,10 @@ def main(args):
                 decay_rate=args.decay_rate, 
                 staircase=True
                 )
+            # begin trainiing with a really low learning rate to avoid killing all of the neurons at the start
+            optimizer_1 = tf.train.RMSPropOptimizer(learning_rate=1e-7)
+            train_op_1 = optimizer_1.minimize(total_loss, global_step=global_step, var_list=head_variables, gate_gradients=tf.train.RMSPropOptimizer.GATE_NONE)
+            
             head_optimizer = tf.train.RMSPropOptimizer(learning_rate)
             head_train_op = head_optimizer.minimize(total_loss, global_step=global_step, var_list=head_variables, gate_gradients=tf.train.RMSPropOptimizer.GATE_NONE)
         
@@ -587,7 +612,29 @@ def main(args):
             print("Beginning Training...")
 
             #############################################################
-            ###################### TRAINING ROUND 1 #####################
+            ###################### TRAINING ROUND 0 #####################
+            #############################################################
+            print('### Starting Epoch 0 - burn in with low learning rate')
+            sess.run(train_init_op)
+            batch = 1
+            while True:
+                    try:
+                        kp_loss, _ = sess.run([keypoint_loss, head_train_op], {is_training: True})
+                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch, kp_loss))
+                        if batch % args.summary_every == 0:
+                            image_summ, scalar_summ, histogram_summ = sess.run([image_summary, scalar_summary, histogram_summary],{is_training: False})
+                            file_writer.add_summary(image_summ, global_step=tf.train.global_step(sess, global_step))
+                            file_writer.add_summary(scalar_summ, global_step=tf.train.global_step(sess, global_step))
+                            file_writer.add_summary(histogram_summ, global_step=tf.train.global_step(sess, global_step))
+                        else:
+                            scalar_summ = sess.run(scalar_summary, {is_training: False})
+                            file_writer.add_summary(scalar_summ, global_step=tf.train.global_step(sess, global_step))
+                        batch += 1
+                    except tf.errors.OutOfRangeError:
+                        break
+
+            #############################################################
+            ###################### TRAINING ROUND 0 #####################
             #############################################################
             for epoch in range(args.num_epochs1):
                 # Run an epoch over the training data.
@@ -614,6 +661,7 @@ def main(args):
                     head_saver.save(sess, args.save_path, global_step=tf.train.global_step(sess, global_step))
 
                 # # Check accuracy on the train and val sets every epoch.
+                print("DO NOT PANIC - CHECKING ACCURACY")
                 kpt_train_acc = check_accuracy(sess, keypoint_accuracy, is_training, train_init_op)
                 kpt_val_acc = check_accuracy(sess, keypoint_accuracy, is_training, val_init_op)
                 print('Train accuracy ---- Keypoints_5: {:0>5}'.format(kpt_train_acc))

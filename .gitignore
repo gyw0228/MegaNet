@@ -7,3 +7,4 @@ notebooks/events.*
 slim/*
 *.json
 checkpoints/*
+graphics/*
