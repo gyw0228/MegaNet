@@ -616,11 +616,11 @@ def main(args):
             #############################################################
             print('### Starting Epoch 0 - burn in with low learning rate')
             sess.run(train_init_op)
-            batch = 1
+            batch = 0
             while True:
                     try:
                         kp_loss, _ = sess.run([keypoint_loss, head_train_op], {is_training: True})
-                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch, kp_loss))
+                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, kp_loss))
                         if batch % args.summary_every == 0:
                             image_summ, scalar_summ, histogram_summ = sess.run([image_summary, scalar_summary, histogram_summary],{is_training: False})
                             file_writer.add_summary(image_summ, global_step=tf.train.global_step(sess, global_step))
@@ -640,11 +640,11 @@ def main(args):
                 # Run an epoch over the training data.
                 print('### Starting epoch {}/{} ####################'.format(epoch + 1, args.num_epochs1))
                 sess.run(train_init_op) # initialize the iterator with the training set.
-                batch = 1
+                batch = 0
                 while True:
                     try:
                         kp_loss, _ = sess.run([keypoint_loss, head_train_op], {is_training: True})
-                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch, kp_loss))
+                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, kp_loss))
                         if batch % args.summary_every == 0:
                             image_summ, scalar_summ, histogram_summ = sess.run([image_summary, scalar_summary, histogram_summary],{is_training: False})
                             file_writer.add_summary(image_summ, global_step=tf.train.global_step(sess, global_step))
