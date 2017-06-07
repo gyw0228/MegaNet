@@ -40,6 +40,7 @@ parser.add_argument('--checkpoint_every', default=50, type=int) # save checkpoin
 parser.add_argument('--summary_every', default=200, type=int) # batches per summary
 parser.add_argument('--save_path', default='checkpoints/MegaNet', type=str)
 parser.add_argument('--log_path', default='/tmp/KyleNet', type=str)
+parser.add_argument('--dropout_keep_prob', default=0.5, type=float)
 
 def check_accuracy(sess, keypoint_accuracy, is_training, dataset_init_op, MAX_BATCHES=50):
     """
