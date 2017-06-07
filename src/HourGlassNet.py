@@ -236,7 +236,7 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
         head = {}
         with tf.variable_scope('Hourglass'):
             with tf.variable_scope('base'):
-                base = tf.layers.conv2d(inputs, base_filters, (3,3),strides=(1,1),padding='SAME',bias_initializer=tf.constant_initializer(0.01))
+                base = tf.layers.conv2d(inputs, base_filters, (3,3),strides=(1,1),padding='SAME')
                 histogram_summary_list.append(tf.summary.histogram('base', base))
                 image_summary_list.append(tf.summary.image('base',getActivationImage(base, scale_up=True)))
                 base = tf.layers.batch_normalization(base,axis=3)
@@ -246,7 +246,8 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                 with tf.variable_scope('level_{}'.format(level+1)):
                     bridge_filters = base_filters*2**level
                     # Base - decrease size by factor of 2 for n
-                    base = tf.layers.conv2d(base,bridge_filters,(3,3),strides=(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
+                    base = tf.layers.dropout(base,rate=args.dropout_keep_prob)
+                    base = tf.layers.conv2d(base,bridge_filters,(3,3),strides=(2,2),padding='SAME')
                     histogram_summary_list.append(tf.summary.histogram('level_{}_base'.format(level+1), base))
                     base = tf.layers.batch_normalization(base,axis=3)
                     base = tf.nn.relu(base)
@@ -254,7 +255,8 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                     # Bridge - maintain constant size
                     bridge = base
                     for i in range(num_levels - level):
-                        bridge = tf.layers.conv2d(bridge,bridge_filters,(3,3),strides=(1,1),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
+                        bridge = tf.layers.dropout(bridge,rate=args.dropout_keep_prob)
+                        bridge = tf.layers.conv2d(bridge,bridge_filters,(3,3),strides=(1,1),padding='SAME')
                         histogram_summary_list.append(tf.summary.histogram('level_{}_bridge_{}'.format(level+1,i+1), bridge))
                         bridge = tf.layers.batch_normalization(bridge,axis=3)
                         bridge = tf.nn.relu(bridge)
@@ -265,8 +267,9 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                 # resize_bilinear or upconv?
                 # output = tf.image.resize_bilinear(ouput,size=2*output.shape[1:2])
                 out_filters = int(base_filters*2**(level-1))
-
-                output = tf.layers.conv2d_transpose(head[level],out_filters,(3,3),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
+                output = head[level]
+                output = tf.layers.dropout(output,rate=args.dropout_keep_prob)
+                output = tf.layers.conv2d_transpose(output,out_filters,(3,3),(2,2),padding='SAME')
                 histogram_summary_list.append(tf.summary.histogram('level_{}_out'.format(level+1), output))
                 output = tf.layers.batch_normalization(output,axis=3) # HERE OR AFTER CONCAT???
                 output = tf.nn.relu(output) # HERE OR AFTER CONCAT???
