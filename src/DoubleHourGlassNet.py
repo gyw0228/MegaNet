@@ -331,8 +331,8 @@ def main(args):
         NUM_KEYPOINTS = 17
         BATCH_SIZE = args.batch_size
         L = 5.0 # keypoint effective radius
-        D = 224 # image height and width
-        d = 112 # evaluation height and width (for mask and keypoint masks)
+        D = 256 # image height and width
+        d = 128 # evaluation height and width (for mask and keypoint masks)
         MASK_THRESHOLD = 0.5 # threshold for on/off prediction (in mask and keypoint masks)
         KP_THRESHOLD = 0.5 # threshold for on/off prediction (in mask and keypoint masks)
         KP_DISTANCE_THRESHOLD = 5.0 # threshold for determining if a keypoint estimate is accurate
@@ -565,7 +565,7 @@ def main(args):
                 net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
                     graph,
                     inputs=net,
-                    num_levels=4,
+                    num_levels=6,
                     base_filters=16,
                     scalar_summary_list=scalar_summary_list,
                     image_summary_list=image_summary_list,
