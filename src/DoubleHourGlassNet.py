@@ -265,7 +265,7 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
             with tf.variable_scope('base'):
                 base = tf.layers.conv2d(inputs, base_filters, (3,3),strides=(1,1),padding='SAME')
                 histogram_summary_list.append(tf.summary.histogram('base', base))
-                image_summary_list.append(tf.summary.image('base',getActivationImage(base, scale_up=True)))
+                image_summary_list.append(tf.summary.image('base',getActivationImage(base, scale_up=True),max_outputs=1))
                 base = tf.layers.batch_normalization(base,axis=3)
                 base = tf.nn.relu(base)
 
@@ -289,7 +289,7 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                         bridge = tf.layers.batch_normalization(bridge,axis=3)
                         bridge = tf.nn.relu(bridge)
                     head[level] = bridge
-                    image_summary_list.append(tf.summary.image('bridge_{}'.format(level+1), getActivationImage(bridge, scale_up=True)))
+                    image_summary_list.append(tf.summary.image('bridge_{}'.format(level+1), getActivationImage(bridge, scale_up=True),max_outputs=1))
                     
             for level in reversed(range(1,num_levels)):
                 # resize_bilinear or upconv?
@@ -519,8 +519,8 @@ def main(args):
             train_init_op = iterator.make_initializer(train_dataset)
             val_init_op = iterator.make_initializer(val_dataset)
 
-            image_summary_list.append(tf.summary.image('keypoint masks', getActivationImage(kpt_masks, scale_up=True)))
-            image_summary_list.append(tf.summary.image('input images', images))
+            image_summary_list.append(tf.summary.image('keypoint masks', getActivationImage(kpt_masks, scale_up=True),max_outputs=1))
+            image_summary_list.append(tf.summary.image('input images', images,max_outputs=1))
         
         #######################################################
         ##################### BUILD GRAPH #####################
@@ -569,7 +569,7 @@ def main(args):
                 endpoints[v.name] = v
 
             # image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/Block_1/Hourglass/base/conv2d/kernel:0'],0))))
-            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/conv2d/kernel:0'],0))))
+            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/conv2d/kernel:0'],0)),max_outputs=1))
 
         ########## Prediction and Accuracy Checking ########### 
             with tf.variable_scope('predictions1'):
@@ -577,7 +577,7 @@ def main(args):
                 keypoint_predictions1 = KeypointPrediction(graph,keypoint_mask_predictions1,d=d)
                 keypoint_accuracy_1 = keypointPredictionAccuracy(graph,keypoint_predictions1,pts,labels,threshold=4.0)
 
-                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', 500000.0 * getActivationImage(keypoint_mask_predictions1, scale_up=True)))
+                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', 500000.0 * getActivationImage(keypoint_mask_predictions1, scale_up=True),max_outputs=1))
                 scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint1 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions1, pts, labels, 1.0)))
 
@@ -587,7 +587,7 @@ def main(args):
                 keypoint_predictions2 = KeypointPrediction(graph,keypoint_mask_predictions2,d=d)
                 keypoint_accuracy_2 = keypointPredictionAccuracy(graph,keypoint_predictions2,pts,labels,threshold=4.0)
 
-                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', 500000.0 * getActivationImage(keypoint_mask_predictions2, scale_up=True)))
+                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', 500000.0 * getActivationImage(keypoint_mask_predictions2, scale_up=True),max_outputs=1))
                 scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint2 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, 1.0)))
                 # for i in [1.0,2.0,3.0,5.0,8.0]:
