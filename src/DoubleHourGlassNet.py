@@ -32,8 +32,8 @@ parser.add_argument('--small_dataset', default=True, type=bool)
 parser.add_argument('--num_workers', default=4, type=int)
 parser.add_argument('--num_epochs1', default=10, type=int)
 parser.add_argument('--num_epochs2', default=10, type=int)
+parser.add_argument('--learning_rate_burn_in', default=1e-7, type=float)
 parser.add_argument('--learning_rate1', default=1e-3, type=float)
-parser.add_argument('--learning_rate2', default=1e-5, type=float)
 parser.add_argument('--decay_rate', default=0.1, type=float)
 parser.add_argument('--decay_steps', default=5000, type=float)
 parser.add_argument('--checkpoint_every', default=50, type=int) # save checkpoint 5 epochs
@@ -335,7 +335,6 @@ def main(args):
         KP_DISTANCE_THRESHOLD = 5.0 # threshold for determining if a keypoint estimate is accurate
         X_INIT = tf.contrib.layers.xavier_initializer_conv2d() # xavier initializer for head architecture
         learning_rate1 = args.learning_rate1
-        learning_rate2 = args.learning_rate2
 
         #######################################################
         ################## SUMMARY DICTIONARY #################
@@ -634,7 +633,7 @@ def main(args):
                 staircase=True
                 )
             # begin trainiing with a really low learning rate to avoid killing all of the neurons at the start
-            optimizer_1 = tf.train.RMSPropOptimizer(learning_rate=1e-6)
+            optimizer_1 = tf.train.RMSPropOptimizer(learning_rate=args.learning_rate_burn_in)
             train_op_1 = optimizer_1.minimize(total_loss, global_step=global_step, var_list=head_variables, gate_gradients=tf.train.RMSPropOptimizer.GATE_NONE)
             
             head_optimizer = tf.train.RMSPropOptimizer(learning_rate)
