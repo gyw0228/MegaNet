@@ -1,1 +1,1 @@
-python ~/MegaNet/src/HourGlassNet.py --base_dir=/home/kyle/Project/coco --learning_rate1=5e-3 --num_epochs1=10 --batch_size=10 --summary_every=200 --decay_steps=5000 --summary_every=200 --log_path=/home/kyle/Hourglass/logs --small_dataset=0
+python ~/MegaNet/src/DoubleHourGlassNet.py --base_dir=/home/kyle/Project/coco --learning_rate_burn_in=1e-7 --learning_rate1=1e-3 --num_epochs1=10 --batch_size=10 --dropout_keep_prob=0.7 --decay_steps=5000 --summary_every=200 --log_path=/home/kyle/DoubleHourglass/logs --small_dataset=0
