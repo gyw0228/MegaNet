@@ -540,7 +540,7 @@ def main(args):
             with tf.variable_scope('Block_1'):
                 net_1, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
                     graph,
-                    inputs=images,
+                    inputs=net,
                     num_levels=4,
                     base_filters = 64,
                     scalar_summary_list=scalar_summary_list,
@@ -568,7 +568,8 @@ def main(args):
             for v in variables:
                 endpoints[v.name] = v
 
-            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/Block_1/Hourglass/base/conv2d/kernel:0'],0))))
+            # image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/Block_1/Hourglass/base/conv2d/kernel:0'],0))))
+            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/conv2d/kernel:0'],0))))
 
         ########## Prediction and Accuracy Checking ########### 
             with tf.variable_scope('predictions1'):
