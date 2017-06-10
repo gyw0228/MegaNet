@@ -408,6 +408,10 @@ def main(args):
             padded_mask = tf.image.pad_to_bounding_box(cropped_mask,tf.to_int32(dX[1]),tf.to_int32(dX[0]),
                                                         tf.to_int32(sideLength),tf.to_int32(sideLength))
 
+            # if image size is not square, set labels to zero (so loss will be zero padding won't affect training)
+            is_padded = tf.reduce_min(tf.to_float(tf.less(dX, 1.0)))
+            labels = is_padded * labels
+
             resized_image = tf.image.resize_images(padded_image,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
             # resized_image = resized_image - VGG_MEAN
             resized_mask = tf.image.resize_images(padded_mask,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)

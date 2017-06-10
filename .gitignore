@@ -8,3 +8,4 @@ slim/*
 *.json
 checkpoints/*
 graphics/*
+src/eval/*
