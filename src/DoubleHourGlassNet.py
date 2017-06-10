@@ -30,6 +30,7 @@ parser.add_argument('--model_path', default='checkpoints/resnet_v2_50.ckpt', typ
 parser.add_argument('--batch_size', default=2, type=int)
 parser.add_argument('--small_dataset', default=True, type=bool)
 parser.add_argument('--num_workers', default=4, type=int)
+parser.add_argument('--num_batches_burn_in', default=500, type=int)
 parser.add_argument('--num_epochs1', default=10, type=int)
 parser.add_argument('--num_epochs2', default=10, type=int)
 parser.add_argument('--learning_rate_burn_in', default=1e-7, type=float)
@@ -242,7 +243,7 @@ def getActivationImage(activations, scale_up=False):
 #######################################################
 ########### NETWORK DEFINITION FUNCTION(S) ############
 #######################################################
-def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_summary_list=None, image_summary_list=None, histogram_summary_list=None):
+def HourGlassNet(graph, inputs=None, num_levels=5, base_filters=64, scalar_summary_list=None, image_summary_list=None, histogram_summary_list=None, factor=2):
     """
     Returns:
     - net 
@@ -263,25 +264,18 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
         head = {}
         with tf.variable_scope('Hourglass'):
             with tf.variable_scope('base'):
-                base = tf.layers.conv2d(inputs, base_filters, (3,3),strides=(1,1),padding='SAME')
-                histogram_summary_list.append(tf.summary.histogram('base', base))
-                image_summary_list.append(tf.summary.image('base',getActivationImage(base, scale_up=True),max_outputs=1))
-                base = tf.layers.batch_normalization(base,axis=3)
-                base = tf.nn.relu(base)
+                # base = tf.layers.conv2d(inputs, base_filters, (3,3),strides=(1,1),padding='SAME')
+                # histogram_summary_list.append(tf.summary.histogram('base', base))
+                # image_summary_list.append(tf.summary.image('base',getActivationImage(base, scale_up=True),max_outputs=1))
+                # base = tf.layers.batch_normalization(base,axis=3)
+                # base = tf.nn.relu(base)
+                base = inputs
 
             for level in range(num_levels):
-                with tf.variable_scope('level_{}'.format(level+1)):
-                    bridge_filters = base_filters * 2 ** level
-                    # Base - decrease size by factor of 2 for n
-                    base = tf.layers.dropout(base,rate=args.dropout_keep_prob)
-                    base = tf.layers.conv2d(base,bridge_filters,(3,3),strides=(2,2),padding='SAME')
-                    histogram_summary_list.append(tf.summary.histogram('level_{}_base'.format(level+1), base))
-                    base = tf.layers.batch_normalization(base,axis=3)
-                    base = tf.nn.relu(base)
-
-                    # Bridge - maintain constant size
-                with tf.variable_scope('level_{}_bridge'.format(level+1)):
+                # Bridge - maintain constant size
+                with tf.variable_scope('level_{}_bridge'.format(level)):
                     bridge = base
+                    bridge_filters = base_filters * factor ** level
                     for i in range(num_levels - level):
                         bridge = tf.layers.dropout(bridge,rate=args.dropout_keep_prob)
                         bridge = tf.layers.conv2d(bridge,bridge_filters,(3,3),strides=(1,1),padding='SAME')
@@ -289,13 +283,22 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                         bridge = tf.layers.batch_normalization(bridge,axis=3)
                         bridge = tf.nn.relu(bridge)
                     head[level] = bridge
-                    image_summary_list.append(tf.summary.image('bridge_{}'.format(level+1), getActivationImage(bridge, scale_up=True),max_outputs=1))
+                    image_summary_list.append(tf.summary.image('bridge_{}'.format(level), getActivationImage(bridge, scale_up=True),max_outputs=1))
+                
+                if level < num_levels - 1:
+                    with tf.variable_scope('level_{}'.format(level+1)):
+                        # Base - decrease size by factor of 2 for n
+                        base = tf.layers.dropout(base,rate=args.dropout_keep_prob)
+                        base = tf.layers.conv2d(base,bridge_filters,(3,3),strides=(2,2),padding='SAME')
+                        histogram_summary_list.append(tf.summary.histogram('level_{}_base'.format(level+1), base))
+                        base = tf.layers.batch_normalization(base,axis=3)
+                        base = tf.nn.relu(base)
                     
             for level in reversed(range(1,num_levels)):
                 # resize_bilinear or upconv?
                 # output = tf.image.resize_bilinear(ouput,size=2*output.shape[1:2])
                 with tf.variable_scope('level_{}_up'.format(level)):
-                    out_filters = int(base_filters * 2 ** (level-1))
+                    out_filters = int(base_filters * factor ** (level-1))
                     output = head[level]
                     output = tf.layers.dropout(output,rate=args.dropout_keep_prob)
                     output = tf.layers.conv2d_transpose(output,out_filters,(3,3),(2,2),padding='SAME')
@@ -533,43 +536,52 @@ def main(args):
         print("Defining Network architecture...\n")
         HEAD_SCOPE='network'
         with tf.variable_scope(HEAD_SCOPE):
-            net = tf.layers.conv2d(images,64,(3,3),(1,1),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
-            net = tf.layers.batch_normalization(net,axis=3)
-            net = tf.nn.relu(net)
+            with tf.variable_scope('Block_0'):
+                # 1st layer
+                net = tf.layers.conv2d(images,64,(3,3),(1,1),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
+                net = tf.layers.batch_normalization(net,axis=3)
+                net = tf.nn.relu(net)
+
+                # downsample
+                net = tf.layers.conv2d(net,64,(3,3),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
+                net = tf.layers.batch_normalization(net,axis=3)
+                net = tf.nn.relu(net)
 
             with tf.variable_scope('Block_1'):
-                net_1, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
+                net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
                     graph,
                     inputs=net,
-                    num_levels=4,
+                    num_levels=5,
                     base_filters = 64,
                     scalar_summary_list=scalar_summary_list,
                     image_summary_list=image_summary_list,
-                    histogram_summary_list=histogram_summary_list)
+                    histogram_summary_list=histogram_summary_list,
+                    factor=2)
 
-                logits_1 = tf.layers.conv2d(net_1,17,(1,1),(1,1),padding='SAME')
-                input_2 = tf.concat([net_1,logits_1],axis=3)
+                logits_1 = tf.layers.conv2d(net,17,(1,1),(1,1),padding='SAME')
+                # net = tf.concat([net,logits_1],axis=3)
 
             with tf.variable_scope('Block_2'):
-                net_2, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
+                net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
                     graph,
-                    inputs=input_2,
-                    num_levels=3,
-                    base_filters = 32,
+                    inputs=net,
+                    num_levels=4,
+                    base_filters=16,
                     scalar_summary_list=scalar_summary_list,
                     image_summary_list=image_summary_list,
-                    histogram_summary_list=histogram_summary_list)
+                    histogram_summary_list=histogram_summary_list,
+                    factor=1)
 
-                logits_2 = tf.layers.conv2d(net_2,17,(1,1),(1,1),padding='SAME')
-                logits_2 = tf.image.resize_bilinear(logits_2,tf.constant([d,d]),name='resized_logits_2')
+                logits_2 = tf.layers.conv2d(net,17,(1,1),(1,1),padding='SAME')
+                # logits_2 = tf.image.resize_bilinear(logits_2,tf.constant([d,d]),name='resized_logits_2')
 
             variables = tf.trainable_variables()
-            endpoints = {}
+            weights = {}
             for v in variables:
-                endpoints[v.name] = v
+                weights[v.name] = v
 
-            # image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/Block_1/Hourglass/base/conv2d/kernel:0'],0))))
-            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/conv2d/kernel:0'],0)),max_outputs=1))
+            # image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(weights['network/Block_1/Hourglass/base/conv2d/kernel:0'],0))))
+            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(weights['network/Block_0/conv2d/kernel:0'],0)),max_outputs=1))
 
         ########## Prediction and Accuracy Checking ########### 
             with tf.variable_scope('predictions1'):
@@ -581,7 +593,6 @@ def main(args):
                 scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint1 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions1, pts, labels, 1.0)))
 
-            
             with tf.variable_scope('predictions2'):
                 keypoint_mask_predictions2 = softmax_keypoint_masks(logits_2, d=d)
                 keypoint_predictions2 = KeypointPrediction(graph,keypoint_mask_predictions2,d=d)
@@ -677,7 +688,7 @@ def main(args):
             print('### Starting Epoch 0 - burn in with low learning rate')
             sess.run(train_init_op)
             batch = 0
-            while True:
+            while batch <= args.num_batches_burn_in:
                     try:
                         loss, _ = sess.run([total_loss, train_op_1], {is_training: True})
                         print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, loss))
