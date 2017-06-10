@@ -471,7 +471,7 @@ def main(args):
                 image_summary_list.append(tf.summary.image('Head - b4', getActivationImage(b4)))
 
             with tf.variable_scope('Layer2'):
-                b1 = tf.layers.conv2d(block1, 32, kernel_size=(3,3), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
+                b1 = tf.layers.conv2d(b1, 32, kernel_size=(3,3), strides=(1,1),padding='SAME',activation=tf.nn.relu, kernel_initializer=X_INIT)
 
                 b2 = tf.layers.conv2d_transpose(b2, 32, kernel_size=(3,3), strides=(2,2),padding='VALID',activation=None, kernel_initializer=X_INIT)
                 b3 = tf.layers.conv2d_transpose(b3, 64, kernel_size=(3,3), strides=(2,2),padding='VALID',activation=None, kernel_initializer=X_INIT)

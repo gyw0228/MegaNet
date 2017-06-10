@@ -61,6 +61,28 @@ def check_accuracy(sess, keypoint_accuracy, is_training, dataset_init_op, MAX_BA
 
     return epoch_kpt_accuracy
 
+def check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, is_training, dataset_init_op, MAX_BATCHES=50):
+    """
+    Check the accuracy of the model on either train or val (depending on dataset_init_op).
+    """
+    # Initialize the correct dataset
+    sess.run(dataset_init_op)
+    evals = 0
+    epoch_kpt_accuracy_1 = 0
+    epoch_kpt_accuracy_2 = 0
+    while True and evals < MAX_BATCHES:
+        try:
+            kpt_acc_1, kpt_acc_2 = sess.run([keypoint_accuracy_1, keypoint_accuracy_2], {is_training: False})
+            epoch_kpt_accuracy_1 += kpt_acc_1
+            epoch_kpt_accuracy_2 += kpt_acc_2
+            evals += 1
+        except tf.errors.OutOfRangeError:
+            break
+    epoch_kpt_accuracy_1 = float(epoch_kpt_accuracy_1/evals)
+    epoch_kpt_accuracy_2 = float(epoch_kpt_accuracy_2/evals)
+
+    return epoch_kpt_accuracy_1, epoch_kpt_accuracy_2
+
 def keypoint_SigmoidCrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
     """
     heat_maps = predictions from network
@@ -170,14 +192,15 @@ def MaskAccuracy(graph, pred_mask, true_mask):
         return tf.reduce_mean(accuracy)
 
 
-# Initialize Dataset
 def get_data(base_dir,image_dir,ann_file):
+    """
+    return paths to images with which you want to work
+    """
     image_path = '{}/images/{}'.format(base_dir,image_dir)
     ann_path='{}/annotations/{}.json'.format(base_dir,ann_file)
 
     return image_path, ann_path
     
-# define the path to the annotation file corresponding to the images you want to work with
 #######################################################
 #### VISUALIZATION TOOLS - WEIGHTS AND ACTIVATIONS ####
 #######################################################
@@ -225,6 +248,9 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
     - net 
     - summary lists
     """
+    ###################################################
+    ################### HOURGLASS 1 ###################
+    ###################################################
     with graph.as_default():
         # Initialize summaries
         if scalar_summary_list is None:
@@ -265,28 +291,20 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters = 64, scalar_sum
                     head[level] = bridge
                     image_summary_list.append(tf.summary.image('bridge_{}'.format(level+1), getActivationImage(bridge, scale_up=True)))
                     
-            for level in reversed(range(num_levels)):
+            for level in reversed(range(1,num_levels)):
                 # resize_bilinear or upconv?
                 # output = tf.image.resize_bilinear(ouput,size=2*output.shape[1:2])
-                if level > 0:
-                    with tf.variable_scope('level_{}_up'.format(level)):
-                        out_filters = int(base_filters * 2 ** (level-1))
-                        output = head[level]
-                        output = tf.layers.dropout(output,rate=args.dropout_keep_prob)
-                        output = tf.layers.conv2d_transpose(output,out_filters,(3,3),(2,2),padding='SAME')
-                        histogram_summary_list.append(tf.summary.histogram('level_{}_out'.format(level+1), output))
-                        output = tf.layers.batch_normalization(output,axis=3) # HERE OR AFTER CONCAT???
-                        output = tf.nn.relu(output) # HERE OR AFTER CONCAT???
+                with tf.variable_scope('level_{}_up'.format(level)):
+                    out_filters = int(base_filters * 2 ** (level-1))
+                    output = head[level]
+                    output = tf.layers.dropout(output,rate=args.dropout_keep_prob)
+                    output = tf.layers.conv2d_transpose(output,out_filters,(3,3),(2,2),padding='SAME')
+                    histogram_summary_list.append(tf.summary.histogram('level_{}_out'.format(level+1), output))
+                    output = tf.layers.batch_normalization(output,axis=3) # HERE OR AFTER CONCAT???
+                    output = tf.nn.relu(output) # HERE OR AFTER CONCAT???
 
-                        # if level > 0:
-                        head[level-1] = tf.concat([head[level-1],output],axis=3)
-
-            variables = tf.trainable_variables()
-            endpoints = {}
-            for v in variables:
-                endpoints[v.name] = v
-
-            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/Hourglass/base/conv2d/kernel:0'],0))))
+                    # if level > 0:
+                    head[level-1] = tf.concat([head[level-1],output],axis=3)
                 
             return head[0], scalar_summary_list, image_summary_list, histogram_summary_list
 
@@ -520,38 +538,73 @@ def main(args):
             net = tf.layers.batch_normalization(net,axis=3)
             net = tf.nn.relu(net)
 
-            net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
-                graph,
-                inputs=images,
-                num_levels=4,
-                base_filters = 64,
-                scalar_summary_list=scalar_summary_list,
-                image_summary_list=image_summary_list,
-                histogram_summary_list=histogram_summary_list)
+            with tf.variable_scope('Block_1'):
+                net_1, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
+                    graph,
+                    inputs=images,
+                    num_levels=4,
+                    base_filters = 64,
+                    scalar_summary_list=scalar_summary_list,
+                    image_summary_list=image_summary_list,
+                    histogram_summary_list=histogram_summary_list)
 
-            logits = tf.layers.conv2d(net,17,(1,1),(1,1),padding='SAME')
+                logits_1 = tf.layers.conv2d(net_1,17,(1,1),(1,1),padding='SAME')
+                input_2 = tf.concat([net_1,logits_1],axis=3)
+
+            with tf.variable_scope('Block_2'):
+                net_2, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
+                    graph,
+                    inputs=input_2,
+                    num_levels=3,
+                    base_filters = 32,
+                    scalar_summary_list=scalar_summary_list,
+                    image_summary_list=image_summary_list,
+                    histogram_summary_list=histogram_summary_list)
+
+                logits_2 = tf.layers.conv2d(net_2,17,(1,1),(1,1),padding='SAME')
+                logits_2 = tf.image.resize_bilinear(logits_2,tf.constant([d,d]),name='resized_logits_2')
+
+            variables = tf.trainable_variables()
+            endpoints = {}
+            for v in variables:
+                endpoints[v.name] = v
+
+            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(endpoints['network/Block_1/Hourglass/base/conv2d/kernel:0'],0))))
 
         ########## Prediction and Accuracy Checking ########### 
-            with tf.variable_scope('predictions'):
-                keypoint_mask_predictions = softmax_keypoint_masks(logits, d=d)
-                keypoint_predictions = KeypointPrediction(graph,keypoint_mask_predictions,d=d)
-                keypoint_accuracy = keypointPredictionAccuracy(graph,keypoint_predictions,pts,labels,threshold=4.0)
+            with tf.variable_scope('predictions1'):
+                keypoint_mask_predictions1 = softmax_keypoint_masks(logits_1, d=d)
+                keypoint_predictions1 = KeypointPrediction(graph,keypoint_mask_predictions1,d=d)
+                keypoint_accuracy_1 = keypointPredictionAccuracy(graph,keypoint_predictions1,pts,labels,threshold=4.0)
 
-                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', 500000.0 * getActivationImage(keypoint_mask_predictions, scale_up=True)))
-                for i in [1.0,2.0,3.0,5.0,8.0]:
-                    scalar_summary_list.append(tf.summary.scalar(
-                        'Head - keypoint accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_predictions, pts, labels, i)
-                    ))
+                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', 500000.0 * getActivationImage(keypoint_mask_predictions1, scale_up=True)))
+                scalar_summary_list.append(tf.summary.scalar(
+                        'Head - keypoint1 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions1, pts, labels, 1.0)))
+
+            
+            with tf.variable_scope('predictions2'):
+                keypoint_mask_predictions2 = softmax_keypoint_masks(logits_2, d=d)
+                keypoint_predictions2 = KeypointPrediction(graph,keypoint_mask_predictions2,d=d)
+                keypoint_accuracy_2 = keypointPredictionAccuracy(graph,keypoint_predictions2,pts,labels,threshold=4.0)
+
+                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', 500000.0 * getActivationImage(keypoint_mask_predictions2, scale_up=True)))
+                scalar_summary_list.append(tf.summary.scalar(
+                        'Head - keypoint2 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, 1.0)))
+                # for i in [1.0,2.0,3.0,5.0,8.0]:
+                #     scalar_summary_list.append(tf.summary.scalar(
+                #         'Head - keypoint accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, i)))
 
         #######################################################
         ####################### LOSSES ########################
         #######################################################
             with tf.variable_scope('loss'):
-                keypoint_loss = tf.reduce_mean(keypoint_SoftmaxCrossEntropyLoss(graph,logits,kpt_masks,labels))
-                total_loss = keypoint_loss
+                keypoint_loss_1 = tf.reduce_mean(keypoint_SoftmaxCrossEntropyLoss(graph,logits_1,kpt_masks,labels))
+                keypoint_loss_2 = tf.reduce_mean(keypoint_SoftmaxCrossEntropyLoss(graph,logits_2,kpt_masks,labels))
+                scalar_summary_list.append(tf.summary.scalar('loss_1', keypoint_loss_1))
+                scalar_summary_list.append(tf.summary.scalar('loss_2', keypoint_loss_2))
 
-                scalar_summary_list.append(tf.summary.scalar('loss', total_loss))
-            
+                total_loss = keypoint_loss_1 + keypoint_loss_2
+
             # Call to initialize Head Variables from scratch
             head_variables = tf.contrib.framework.get_variables(HEAD_SCOPE)
             init_head = tf.variables_initializer(head_variables, 'init_head')
@@ -626,8 +679,8 @@ def main(args):
             batch = 0
             while True:
                     try:
-                        kp_loss, _ = sess.run([keypoint_loss, train_op_1], {is_training: True})
-                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, kp_loss))
+                        loss, _ = sess.run([total_loss, train_op_1], {is_training: True})
+                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, loss))
                         if batch % args.summary_every == 0:
                             image_summ, scalar_summ, histogram_summ = sess.run([image_summary, scalar_summary, histogram_summary],{is_training: False})
                             file_writer.add_summary(image_summ, global_step=tf.train.global_step(sess, global_step))
@@ -650,8 +703,8 @@ def main(args):
                 batch = 0
                 while True:
                     try:
-                        kp_loss, _ = sess.run([keypoint_loss, head_train_op], {is_training: True})
-                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, kp_loss))
+                        loss, _ = sess.run([total_loss, head_train_op], {is_training: True})
+                        print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, loss))
                         if batch % args.summary_every == 0:
                             image_summ, scalar_summ, histogram_summ = sess.run([image_summary, scalar_summary, histogram_summary],{is_training: False})
                             file_writer.add_summary(image_summ, global_step=tf.train.global_step(sess, global_step))
@@ -670,10 +723,12 @@ def main(args):
                 # # Check accuracy on the train and val sets every epoch.
                 print("DO NOT PANIC - CHECKING ACCURACY")
                 print("This part takes a while because the training set and the validation set both have to be initialized...")
-                kpt_train_acc = check_accuracy(sess, keypoint_accuracy, is_training, train_init_op)
-                kpt_val_acc = check_accuracy(sess, keypoint_accuracy, is_training, val_init_op)
-                print('Train accuracy ---- Keypoints_5: {:0>5}'.format(kpt_train_acc))
-                print('  Val accuracy ---- Keypoints_5: {:0>5}'.format(kpt_val_acc))
+                kpt_train_acc_1, kpt_train_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, is_training, train_init_op)
+                kpt_val_acc_1, kpt_val_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, is_training, val_init_op)
+                print('Train accuracy ---- Keypoints_1: {:0>5}'.format(kpt_train_acc_1))
+                print('  Val accuracy ---- Keypoints_1: {:0>5}'.format(kpt_val_acc_1))
+                print('Train accuracy ---- Keypoints_2: {:0>5}'.format(kpt_train_acc_2))
+                print('  Val accuracy ---- Keypoints_2: {:0>5}'.format(kpt_val_acc_2))
 
             print("Finished")
             return
