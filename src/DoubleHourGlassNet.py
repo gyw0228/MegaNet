@@ -216,12 +216,20 @@ def getFilterImage(filters):
     """
     padded_filters = tf.pad(filters,tf.constant([[0,0],[1,0],[1,0],[0,0],[0,0]]),'CONSTANT')
     filter_list = tf.unstack(padded_filters,axis=4)
-    H,W = highestPrimeFactorization(len(filter_list))
-    weight_strips = [tf.concat(filter_list[8*i:8*(i+1)],axis=1) for i in range(W)]
+    N = len(filter_list)
+    H = int(np.ceil(np.sqrt(N)))
+    W = int(np.floor(N/H))
+    diff = N - H*W
+    weight_strips = [tf.concat(filter_list[H*i:H*(i+1)],axis=1) for i in range(W)]
+    if diff > 0:
+        final_strip = tf.concat(filter_list[H*W:N],axis=1)
+        final_strip = tf.pad(final_strip,tf.constant([[0,0],[0,(H-diff)*padded_filters.shape.as_list()[1]],[0,0],[0,0]]),'CONSTANT')
+        weight_strips.append(final_strip)
     weight_image = tf.concat(weight_strips,axis=2)
+    
     return weight_image
 
-def getActivationImage(activations, scale_up=False):
+def getActivationImage(activations):
     """
     Tiles an activation map into a square grayscale image
     Takes as input an activation map of size (N, H, W, D)
@@ -230,20 +238,50 @@ def getActivationImage(activations, scale_up=False):
     padded_activations = tf.pad(activations,tf.constant([[0,0],[1,0],[1,0],[0,0]]),'CONSTANT')
     expanded_activations = tf.expand_dims(padded_activations,axis=3)
     activations_list = tf.unstack(expanded_activations,axis=4)
-    H,W = highestPrimeFactorization(len(activations_list))
+    N = len(activations_list)
+    H = int(np.ceil(np.sqrt(N)))
+    W = int(np.floor(N/H))
+    diff = N - H*W
     activation_strips = [tf.concat(activations_list[H*i:H*(i+1)],axis=1) for i in range(W)]
+    if diff > 0:
+        final_strip = tf.concat(activations_list[H*W:N],axis=1)
+        final_strip = tf.pad(final_strip,tf.constant([[0,0],[0,(H-diff)*padded_activations.shape.as_list()[1]],[0,0],[0,0]]),'CONSTANT')
+        activation_strips.append(final_strip)
     activation_image = tf.concat(activation_strips,axis=2)            
-    if scale_up:
-        activation_image = tf.divide(activation_image, tf.reduce_max(activation_image))
 
     return activation_image
+
+def keypointHeatMapOverlay(images, kpt_masks, threshold=0.1, scale=2.0, grayscale=True): 
+    """
+    Inputs:
+    images - (BATCH_SIZE,H,W,C)
+    kpt_masks - (BATCH_SIZE,H,W,NUM_KPTS)
+    threshold - value of keypoint mask above which we completely remove the image pixels underneath
+    returns an image with keypoint masks overlaid on a grayscale version of the original image. 
+    """ 
+    images_scaled = tf.image.resize_bilinear(images, kpt_masks.shape[1:3]) # resize
+    image_tile = getFilterImage(tf.stack([images_scaled for i in range(17)],axis=4)) # tile
+    if grayscale == True:
+        image_tile = tf.reduce_mean(image_tile,axis=3,keep_dims=True) # grayscale
+    image_tile = tf.divide(image_tile, tf.reduce_max(image_tile)) # normalize
+
+    # normalize individual keypoint masks
+    keypoint_masks = tf.divide(kpt_masks, tf.reduce_max(kpt_masks,axis=[1,2], keep_dims=True))
+    keypoint_tile = getActivationImage(keypoint_masks) # tile
+    
+    image_tile = image_tile*tf.to_float(tf.less_equal(keypoint_tile,threshold)) # zero at keypoint locations?
+    keypoint_tile = tf.concat([keypoint_tile, tf.zeros_like(keypoint_tile),tf.zeros_like(keypoint_tile)],axis=3) # map to R color channel
+
+    flattened_tile = image_tile + scale * keypoint_tile
+    
+    return flattened_tile
 
 
 
 #######################################################
 ########### NETWORK DEFINITION FUNCTION(S) ############
 #######################################################
-def HourGlassNet(graph, inputs=None, num_levels=5, base_filters=64, scalar_summary_list=None, image_summary_list=None, histogram_summary_list=None, factor=2):
+def HourGlassNet(graph, inputs=None, num_filters=[64,128,256,512,1024], num_bridges=[5,4,3,2,1],scalar_summary_list=None, image_summary_list=None, histogram_summary_list=None):
     """
     Returns:
     - net 
@@ -266,26 +304,26 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters=64, scalar_summa
             with tf.variable_scope('base'):
                 # base = tf.layers.conv2d(inputs, base_filters, (3,3),strides=(1,1),padding='SAME')
                 # histogram_summary_list.append(tf.summary.histogram('base', base))
-                # image_summary_list.append(tf.summary.image('base',getActivationImage(base, scale_up=True),max_outputs=1))
+                # image_summary_list.append(tf.summary.image('base',getActivationImage(base),max_outputs=1))
                 # base = tf.layers.batch_normalization(base,axis=3)
                 # base = tf.nn.relu(base)
                 base = inputs
 
-            for level in range(num_levels):
+            for level in range(len(num_filters)):
                 # Bridge - maintain constant size
                 with tf.variable_scope('level_{}_bridge'.format(level)):
                     bridge = base
-                    bridge_filters = base_filters * factor ** level
-                    for i in range(num_levels - level):
+                    bridge_filters = num_filters[level]
+                    for i in range(num_bridges[level]):
                         bridge = tf.layers.dropout(bridge,rate=args.dropout_keep_prob)
                         bridge = tf.layers.conv2d(bridge,bridge_filters,(3,3),strides=(1,1),padding='SAME')
                         histogram_summary_list.append(tf.summary.histogram('level_{}_bridge_{}'.format(level+1,i+1), bridge))
                         bridge = tf.layers.batch_normalization(bridge,axis=3)
                         bridge = tf.nn.relu(bridge)
                     head[level] = bridge
-                    image_summary_list.append(tf.summary.image('bridge_{}'.format(level), getActivationImage(bridge, scale_up=True),max_outputs=1))
+                    image_summary_list.append(tf.summary.image('bridge_{}'.format(level), getActivationImage(bridge),max_outputs=1))
                 
-                if level < num_levels - 1:
+                if level < len(num_filters) - 1:
                     with tf.variable_scope('level_{}'.format(level+1)):
                         # Base - decrease size by factor of 2 for n
                         base = tf.layers.dropout(base,rate=args.dropout_keep_prob)
@@ -294,11 +332,11 @@ def HourGlassNet(graph, inputs=None, num_levels=5, base_filters=64, scalar_summa
                         base = tf.layers.batch_normalization(base,axis=3)
                         base = tf.nn.relu(base)
                     
-            for level in reversed(range(1,num_levels)):
+            for level in reversed(range(1,len(num_filters))):
                 # resize_bilinear or upconv?
                 # output = tf.image.resize_bilinear(ouput,size=2*output.shape[1:2])
                 with tf.variable_scope('level_{}_up'.format(level)):
-                    out_filters = int(base_filters * factor ** (level-1))
+                    out_filters = num_filters[level-1]
                     output = head[level]
                     output = tf.layers.dropout(output,rate=args.dropout_keep_prob)
                     output = tf.layers.conv2d_transpose(output,out_filters,(3,3),(2,2),padding='SAME')
@@ -486,7 +524,7 @@ def main(args):
             val_imgIds = val_coco.getImgIds(catIds=val_catIds)
 
             # Just for dealing with the images on my computer (not necessary when working with the whole dataset)
-            if args.small_dataset:
+            if args.small_dataset == True:
                 train_catIds = train_catIds[0:30]
                 train_imgIds = train_imgIds[0:30]
                 val_catIds = val_catIds[0:30]
@@ -522,8 +560,9 @@ def main(args):
             train_init_op = iterator.make_initializer(train_dataset)
             val_init_op = iterator.make_initializer(val_dataset)
 
-            image_summary_list.append(tf.summary.image('keypoint masks', getActivationImage(kpt_masks, scale_up=True),max_outputs=1))
-            image_summary_list.append(tf.summary.image('input images', images,max_outputs=1))
+            image_summary_list.append(tf.summary.image('keypoint masks', getActivationImage(kpt_masks),max_outputs=1))
+            image_summary_list.append(tf.summary.image('input images', images, max_outputs=1))
+            image_summary_list.append(tf.summary.image('keypoint_overlays', keypointHeatMapOverlay(images, kpt_masks, threshold=0.1)))
         
         #######################################################
         ##################### BUILD GRAPH #####################
@@ -551,12 +590,11 @@ def main(args):
                 net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
                     graph,
                     inputs=net,
-                    num_levels=5,
-                    base_filters = 64,
+                    num_filters=[64,128,256,512,1024], 
+                    num_bridges=[5,4,3,2,1],
                     scalar_summary_list=scalar_summary_list,
                     image_summary_list=image_summary_list,
-                    histogram_summary_list=histogram_summary_list,
-                    factor=2)
+                    histogram_summary_list=histogram_summary_list)
 
                 logits_1 = tf.layers.conv2d(net,17,(1,1),(1,1),padding='SAME')
                 # net = tf.concat([net,logits_1],axis=3)
@@ -565,12 +603,11 @@ def main(args):
                 net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
                     graph,
                     inputs=net,
-                    num_levels=6,
-                    base_filters=16,
+                    num_filters=[16,16,32,32,64], 
+                    num_bridges=[5,4,3,2,1],
                     scalar_summary_list=scalar_summary_list,
                     image_summary_list=image_summary_list,
-                    histogram_summary_list=histogram_summary_list,
-                    factor=1)
+                    histogram_summary_list=histogram_summary_list)
 
                 logits_2 = tf.layers.conv2d(net,17,(1,1),(1,1),padding='SAME')
                 # logits_2 = tf.image.resize_bilinear(logits_2,tf.constant([d,d]),name='resized_logits_2')
@@ -589,7 +626,8 @@ def main(args):
                 keypoint_predictions1 = KeypointPrediction(graph,keypoint_mask_predictions1,d=d)
                 keypoint_accuracy_1 = keypointPredictionAccuracy(graph,keypoint_predictions1,pts,labels,threshold=4.0)
 
-                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', 500000.0 * getActivationImage(keypoint_mask_predictions1, scale_up=True),max_outputs=1))
+                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction1', getActivationImage(keypoint_mask_predictions1),max_outputs=1))
+                image_summary_list.append(tf.summary.image('keypoint_overlay_pred1', keypointHeatMapOverlay(images, keypoint_mask_predictions1, threshold=0.9)))
                 scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint1 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions1, pts, labels, 1.0)))
 
@@ -598,7 +636,8 @@ def main(args):
                 keypoint_predictions2 = KeypointPrediction(graph,keypoint_mask_predictions2,d=d)
                 keypoint_accuracy_2 = keypointPredictionAccuracy(graph,keypoint_predictions2,pts,labels,threshold=4.0)
 
-                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction', 500000.0 * getActivationImage(keypoint_mask_predictions2, scale_up=True),max_outputs=1))
+                image_summary_list.append(tf.summary.image('Head - keypoint mask prediction2', getActivationImage(keypoint_mask_predictions2),max_outputs=1))
+                image_summary_list.append(tf.summary.image('keypoint_overlay_pred2', keypointHeatMapOverlay(images, keypoint_predictions2, threshold=0.9)))
                 scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint2 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, 1.0)))
                 # for i in [1.0,2.0,3.0,5.0,8.0]:
@@ -674,9 +713,7 @@ def main(args):
 
             file_writer = tf.summary.FileWriter(log_path)
             file_writer.add_graph(sess.graph)
-            print("Initializing backbone variables...")
-            # init_fn(sess) # pretrained backbone variables
-            print("Initializing head variables...")
+            print("Initializing network variables...")
             sess.run(init_head) # head variables
             print("Initializing optimizer variables...\n")
             sess.run(init_optimizer)
