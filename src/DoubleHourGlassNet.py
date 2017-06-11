@@ -43,7 +43,7 @@ parser.add_argument('--log_path', default='/tmp/KyleNet', type=str)
 parser.add_argument('--dropout_keep_prob', default=0.5, type=float)
 parser.add_argument('--reg_term', default=0.0, type=float) # l2 regularization term
 
-def check_accuracy(sess, keypoint_accuracy, is_training, dataset_init_op, MAX_BATCHES=50):
+def check_accuracy(sess, keypoint_accuracy, labels, is_training, dataset_init_op, MAX_BATCHES=50):
     """
     Check the accuracy of the model on either train or val (depending on dataset_init_op).
     """
@@ -53,34 +53,34 @@ def check_accuracy(sess, keypoint_accuracy, is_training, dataset_init_op, MAX_BA
     epoch_kpt_accuracy = 0
     while True and evals < MAX_BATCHES:
         try:
-            kpt_acc = sess.run(keypoint_accuracy, {is_training: False})
+            kpt_acc, label = sess.run([keypoint_accuracy, labels], {is_training: False})
             epoch_kpt_accuracy += kpt_acc
-            evals += 1
+            evals += 1 * tf.reduce_mean(tf.to_float(tf.greater(label, 1.5)))
         except tf.errors.OutOfRangeError:
             break
     epoch_kpt_accuracy = float(epoch_kpt_accuracy/evals)
 
     return epoch_kpt_accuracy
 
-def check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, is_training, dataset_init_op, MAX_BATCHES=50):
+def check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, labels, is_training, dataset_init_op, MAX_BATCHES=50):
     """
     Check the accuracy of the model on either train or val (depending on dataset_init_op).
     """
     # Initialize the correct dataset
     sess.run(dataset_init_op)
-    evals = 0
-    epoch_kpt_accuracy_1 = 0
-    epoch_kpt_accuracy_2 = 0
+    evals = 0.0
+    epoch_kpt_accuracy_1 = 0.0
+    epoch_kpt_accuracy_2 = 0.0
     while True and evals < MAX_BATCHES:
         try:
-            kpt_acc_1, kpt_acc_2 = sess.run([keypoint_accuracy_1, keypoint_accuracy_2], {is_training: False})
+            kpt_acc_1, kpt_acc_2, label = sess.run([keypoint_accuracy_1, keypoint_accuracy_2, labels], {is_training: False})
             epoch_kpt_accuracy_1 += kpt_acc_1
             epoch_kpt_accuracy_2 += kpt_acc_2
-            evals += 1
+            evals += 1.0# * tf.reduce_mean(tf.to_float(tf.greater(label, 1)))
         except tf.errors.OutOfRangeError:
             break
-    epoch_kpt_accuracy_1 = float(epoch_kpt_accuracy_1/evals)
-    epoch_kpt_accuracy_2 = float(epoch_kpt_accuracy_2/evals)
+    epoch_kpt_accuracy_1 = float(epoch_kpt_accuracy_1/(evals + 0.00001))
+    epoch_kpt_accuracy_2 = float(epoch_kpt_accuracy_2/(evals + 0.00001))
 
     return epoch_kpt_accuracy_1, epoch_kpt_accuracy_2
 
@@ -180,8 +180,9 @@ def keypointPredictionAccuracy(graph, pred_pts, true_pts, labels, threshold, sco
     """
     with graph.as_default():
         with tf.variable_scope(scope):
-            error = tf.multiply(tf.square(tf.subtract(pred_pts, true_pts)), tf.to_float(tf.greater_equal(labels, 1)))
-            accuracy = tf.reduce_mean(tf.to_float(tf.less(error,tf.square(threshold))))
+            error = tf.reduce_sum(tf.square(tf.subtract(pred_pts, true_pts)), axis=2)
+            accuracy = tf.to_float(tf.less(error,tf.square(threshold))) * tf.to_float(tf.greater_equal(labels,1.5))
+            accuracy = tf.reduce_sum(accuracy) / (tf.reduce_sum(tf.to_float(tf.greater_equal(labels,1.5))) + 0.00001)
             return accuracy
 
 def MaskAccuracy(graph, pred_mask, true_mask):
@@ -422,7 +423,7 @@ def main(args):
                 image_string = tf.read_file(filename)
                 image_decoded = tf.image.decode_jpeg(image_string, channels=3)
                 image = tf.cast(image_decoded, tf.float32)
-                
+
                 # subtract mean
                 image = tf.subtract(image, tf.reduce_mean(image))
 
@@ -440,43 +441,32 @@ def main(args):
                 corner2 = tf.to_int32(tf.minimum(tf.maximum(tf.add(center, tf.divide(sideLength,tf.constant(2.0))),0),
                                     tf.reverse(tf.to_float(tf.shape(image)[:2]),tf.constant([0]))))
                 i_shape = tf.subtract(corner2,corner1)
-                d_shape = tf.subtract(tf.to_int32(sideLength),i_shape)
-
+                ##### Move corner 2 to enforce squareness!! #####
+                corner2 = corner1 + tf.reduce_min(i_shape)
+                sideLength = tf.to_float(tf.reduce_min(corner2-corner1))
+                
                 scale = tf.divide(tf.constant(D,tf.float32), sideLength)
                 cropped_image = tf.image.crop_to_bounding_box(image,corner1[1],corner1[0],
                                                             tf.subtract(corner2,corner1)[1],tf.subtract(corner2,corner1)[0])
                 cropped_mask = tf.image.crop_to_bounding_box(mask,corner1[1],corner1[0],
                                                             tf.subtract(corner2,corner1)[1],tf.subtract(corner2,corner1)[0])
 
-                dX = tf.floor(tf.divide(d_shape,tf.constant(2)))
-                dY = tf.ceil(tf.divide(d_shape,tf.constant(2)))
-
                 pts, labels = tf.split(keypoints_tensor,[2,1],axis=1)
                 pts = tf.subtract(pts,tf.to_float(corner1)) # shift keypoints
-                pts = tf.add(pts,tf.to_float(dX)) # shift keypoints
                 pts = tf.multiply(pts,scale) # scale keypoints
 
                 # set invalid pts to 0
                 valid = tf.less(pts,tf.constant(D,tf.float32))
-                valid = tf.reduce_min(tf.multiply(tf.to_int32(valid), tf.to_int32(tf.greater(pts,0))), axis=0,keep_dims=True)
-                pts = tf.multiply(pts,tf.to_float(valid))
+                valid = tf.reduce_min(tf.multiply(tf.to_float(valid), tf.to_float(tf.greater(pts,0))), axis=1, keep_dims=True)
+                pts = tf.multiply(pts,valid)
+                labels = tf.multiply(labels,valid)
                 pts = tf.transpose(pts,[1,0])
                 labels = tf.transpose(labels,[1,0])
-                labels = tf.to_float(tf.greater_equal(labels, 2)) # only use labels whose values are 2 - is this a good idea?
-                # labels = labels * tf.reduce_min(tf.to_float(tf.transpose(valid,[1,0])), axis=0) # make sure no invalid labels are getting through
+                labels = tf.to_float(tf.greater_equal(labels, 1.5)) # only use labels whose values are 2 - is this a good idea?
 
-                padded_image = tf.image.pad_to_bounding_box(cropped_image,tf.to_int32(dX[1]),tf.to_int32(dX[0]),
-                                                            tf.to_int32(sideLength),tf.to_int32(sideLength))
-                padded_mask = tf.image.pad_to_bounding_box(cropped_mask,tf.to_int32(dX[1]),tf.to_int32(dX[0]),
-                                                            tf.to_int32(sideLength),tf.to_int32(sideLength))
-
-                # if image size is not square, set labels to zero (so zero-padding won't affect training)
-                is_padded = tf.reduce_min(tf.to_float(tf.less(dX, 1.0)))
-                labels = is_padded * labels
-
-                resized_image = tf.image.resize_images(padded_image,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
-                # resized_image = resized_image - VGG_MEAN
-                resized_mask = tf.image.resize_images(padded_mask,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+                resized_image = tf.image.resize_images(cropped_image,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+                resized_mask = tf.image.resize_images(cropped_mask,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+                
                 return resized_image, resized_mask, pts, labels
 
             def scaleDownMaskAndKeypoints(image, mask, pts, labels, d=d, D=D):
@@ -504,7 +494,7 @@ def main(args):
                 kp_mask1 = tf.one_hot(depth=d,indices=indices[:,1,:],axis=0)
                 kp_mask2 = tf.one_hot(depth=d,indices=indices[:,0,:],axis=1)
                 kp_masks = tf.matmul(tf.transpose(kp_mask1,(2,0,1)),tf.transpose(kp_mask2,(2,0,1)))
-                kp_masks = tf.transpose(kp_masks,(1,2,0))
+                kp_masks = tf.transpose(kp_masks,(1,2,0))*labels
                 return image, mask, kp_masks, pts, labels
 
             
@@ -527,10 +517,10 @@ def main(args):
 
             # Just for dealing with the images on my computer (not necessary when working with the whole dataset)
             if args.small_dataset == True:
-                train_catIds = train_catIds[0:30]
-                train_imgIds = train_imgIds[0:30]
-                val_catIds = val_catIds[0:30]
-                val_imgIds = val_imgIds[0:30]
+                train_catIds = train_catIds[0:5]
+                train_imgIds = train_imgIds[0:5]
+                val_catIds = val_catIds[0:5]
+                val_imgIds = val_imgIds[0:5]
 
             ################### TRAIN DATASET ###################
             train_filenames = tf.constant(['{}/COCO_train2014_{:0>12}.jpg'.format(train_img_path, imgID) for imgID in train_imgIds])
@@ -771,8 +761,8 @@ def main(args):
                 # # Check accuracy on the train and val sets every epoch.
                 print("DO NOT PANIC - CHECKING ACCURACY")
                 print("This part takes a while because the training set and the validation set both have to be initialized...")
-                kpt_train_acc_1, kpt_train_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, is_training, train_init_op)
-                kpt_val_acc_1, kpt_val_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, is_training, val_init_op)
+                kpt_train_acc_1, kpt_train_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, labels, is_training, train_init_op)
+                kpt_val_acc_1, kpt_val_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, labels, is_training, val_init_op)
                 print('Train accuracy ---- Keypoints_1: {:0>5}'.format(kpt_train_acc_1))
                 print('  Val accuracy ---- Keypoints_1: {:0>5}'.format(kpt_val_acc_1))
                 print('Train accuracy ---- Keypoints_2: {:0>5}'.format(kpt_train_acc_2))
