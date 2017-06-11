@@ -33,7 +33,7 @@ parser.add_argument('--num_workers', default=4, type=int)
 parser.add_argument('--num_batches_burn_in', default=500, type=int)
 parser.add_argument('--num_epochs1', default=10, type=int)
 parser.add_argument('--num_epochs2', default=10, type=int)
-parser.add_argument('--learning_rate_burn_in', default=1e-7, type=float)
+parser.add_argument('--learning_rate_burn_in', default=1e-5, type=float)
 parser.add_argument('--learning_rate1', default=1e-3, type=float)
 parser.add_argument('--decay_rate', default=0.1, type=float)
 parser.add_argument('--decay_steps', default=5000, type=float)
@@ -373,6 +373,7 @@ def main(args):
         d = 128 # evaluation height and width (for mask and keypoint masks)
         MASK_THRESHOLD = 0.5 # threshold for on/off prediction (in mask and keypoint masks)
         KP_THRESHOLD = 0.5 # threshold for on/off prediction (in mask and keypoint masks)
+        KP_VIS_THRESHOLD = 0.9 # Threshold for visualization of KP masks in tf image summaries
         KP_DISTANCE_THRESHOLD = 5.0 # threshold for determining if a keypoint estimate is accurate
         X_INIT = tf.contrib.layers.xavier_initializer_conv2d() # xavier initializer for head architecture
         learning_rate1 = args.learning_rate1
@@ -562,7 +563,7 @@ def main(args):
 
             image_summary_list.append(tf.summary.image('keypoint masks', getActivationImage(kpt_masks),max_outputs=1))
             image_summary_list.append(tf.summary.image('input images', images, max_outputs=1))
-            image_summary_list.append(tf.summary.image('keypoint_overlays', keypointHeatMapOverlay(images, kpt_masks, threshold=0.1)))
+            image_summary_list.append(tf.summary.image('keypoint_overlays', keypointHeatMapOverlay(images, kpt_masks, threshold=KP_VIS_THRESHOLD)))
         
         #######################################################
         ##################### BUILD GRAPH #####################
@@ -577,14 +578,11 @@ def main(args):
         with tf.variable_scope(HEAD_SCOPE):
             with tf.variable_scope('Block_0'):
                 # 1st layer
-                net = tf.layers.conv2d(images,64,(3,3),(1,1),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
+                net = tf.layers.conv2d(images,64,(5,5),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.01))
                 net = tf.layers.batch_normalization(net,axis=3)
                 net = tf.nn.relu(net)
 
-                # downsample
-                net = tf.layers.conv2d(net,64,(3,3),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.1))
-                net = tf.layers.batch_normalization(net,axis=3)
-                net = tf.nn.relu(net)
+                image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(tf.trainable_variables()[0],0)),max_outputs=1))
 
             with tf.variable_scope('Block_1'):
                 net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
@@ -596,6 +594,7 @@ def main(args):
                     image_summary_list=image_summary_list,
                     histogram_summary_list=histogram_summary_list)
 
+                # 1 x 1 convolution into prediction logits
                 logits_1 = tf.layers.conv2d(net,17,(1,1),(1,1),padding='SAME')
                 # net = tf.concat([net,logits_1],axis=3)
 
@@ -618,7 +617,7 @@ def main(args):
                 weights[v.name] = v
 
             # image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(weights['network/Block_1/Hourglass/base/conv2d/kernel:0'],0))))
-            image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(weights['network/Block_0/conv2d/kernel:0'],0)),max_outputs=1))
+            # image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(weights['network/Block_0/conv2d/kernel:0'],0)),max_outputs=1))
 
         ########## Prediction and Accuracy Checking ########### 
             with tf.variable_scope('predictions1'):
@@ -627,7 +626,7 @@ def main(args):
                 keypoint_accuracy_1 = keypointPredictionAccuracy(graph,keypoint_predictions1,pts,labels,threshold=4.0)
 
                 image_summary_list.append(tf.summary.image('Head - keypoint mask prediction1', getActivationImage(keypoint_mask_predictions1),max_outputs=1))
-                image_summary_list.append(tf.summary.image('keypoint_overlay_pred1', keypointHeatMapOverlay(images, keypoint_mask_predictions1, threshold=0.9)))
+                image_summary_list.append(tf.summary.image('keypoint_overlay_pred1', keypointHeatMapOverlay(images, keypoint_mask_predictions1, threshold=KP_VIS_THRESHOLD)))
                 scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint1 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions1, pts, labels, 1.0)))
 
@@ -637,7 +636,7 @@ def main(args):
                 keypoint_accuracy_2 = keypointPredictionAccuracy(graph,keypoint_predictions2,pts,labels,threshold=4.0)
 
                 image_summary_list.append(tf.summary.image('Head - keypoint mask prediction2', getActivationImage(keypoint_mask_predictions2),max_outputs=1))
-                image_summary_list.append(tf.summary.image('keypoint_overlay_pred2', keypointHeatMapOverlay(images, keypoint_predictions2, threshold=0.9)))
+                image_summary_list.append(tf.summary.image('keypoint_overlay_pred2', keypointHeatMapOverlay(images, keypoint_predictions2, threshold=KP_VIS_THRESHOLD)))
                 scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint2 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, 1.0)))
                 # for i in [1.0,2.0,3.0,5.0,8.0]:
