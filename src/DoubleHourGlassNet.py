@@ -42,6 +42,7 @@ parser.add_argument('--summary_every', default=200, type=int) # batches per summ
 parser.add_argument('--save_path', default='checkpoints/MegaNet', type=str)
 parser.add_argument('--log_path', default='/tmp/KyleNet', type=str)
 parser.add_argument('--dropout_keep_prob', default=0.5, type=float)
+parser.add_argument('--reg_term', default=0.0, type=float) # l2 regularization term
 
 def check_accuracy(sess, keypoint_accuracy, is_training, dataset_init_op, MAX_BATCHES=50):
     """
@@ -582,6 +583,7 @@ def main(args):
                 net = tf.layers.batch_normalization(net,axis=3)
                 net = tf.nn.relu(net)
 
+                histogram_summary_list.append(tf.summary.histogram('layer1_conv', tf.trainable_variables()[0]))
                 image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(tf.trainable_variables()[0],0)),max_outputs=1))
 
             with tf.variable_scope('Block_1'):
@@ -611,14 +613,6 @@ def main(args):
                 logits_2 = tf.layers.conv2d(net,17,(1,1),(1,1),padding='SAME')
                 # logits_2 = tf.image.resize_bilinear(logits_2,tf.constant([d,d]),name='resized_logits_2')
 
-            variables = tf.trainable_variables()
-            weights = {}
-            for v in variables:
-                weights[v.name] = v
-
-            # image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(weights['network/Block_1/Hourglass/base/conv2d/kernel:0'],0))))
-            # image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(weights['network/Block_0/conv2d/kernel:0'],0)),max_outputs=1))
-
         ########## Prediction and Accuracy Checking ########### 
             with tf.variable_scope('predictions1'):
                 keypoint_mask_predictions1 = softmax_keypoint_masks(logits_1, d=d)
@@ -626,7 +620,7 @@ def main(args):
                 keypoint_accuracy_1 = keypointPredictionAccuracy(graph,keypoint_predictions1,pts,labels,threshold=4.0)
 
                 image_summary_list.append(tf.summary.image('Head - keypoint mask prediction1', getActivationImage(keypoint_mask_predictions1),max_outputs=1))
-                image_summary_list.append(tf.summary.image('keypoint_overlay_pred1', keypointHeatMapOverlay(images, keypoint_mask_predictions1, threshold=KP_VIS_THRESHOLD)))
+                image_summary_list.append(tf.summary.image('keypoint_overlay_pred1', keypointHeatMapOverlay(images, keypoint_mask_predictions1, threshold=KP_VIS_THRESHOLD), max_outputs=1))
                 scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint1 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions1, pts, labels, 1.0)))
 
@@ -636,7 +630,7 @@ def main(args):
                 keypoint_accuracy_2 = keypointPredictionAccuracy(graph,keypoint_predictions2,pts,labels,threshold=4.0)
 
                 image_summary_list.append(tf.summary.image('Head - keypoint mask prediction2', getActivationImage(keypoint_mask_predictions2),max_outputs=1))
-                image_summary_list.append(tf.summary.image('keypoint_overlay_pred2', keypointHeatMapOverlay(images, keypoint_predictions2, threshold=KP_VIS_THRESHOLD)))
+                image_summary_list.append(tf.summary.image('keypoint_overlay_pred2', keypointHeatMapOverlay(images, keypoint_mask_predictions2, threshold=KP_VIS_THRESHOLD), max_outputs=1))
                 scalar_summary_list.append(tf.summary.scalar(
                         'Head - keypoint2 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, 1.0)))
                 # for i in [1.0,2.0,3.0,5.0,8.0]:
@@ -652,7 +646,9 @@ def main(args):
                 scalar_summary_list.append(tf.summary.scalar('loss_1', keypoint_loss_1))
                 scalar_summary_list.append(tf.summary.scalar('loss_2', keypoint_loss_2))
 
-                total_loss = keypoint_loss_1 + keypoint_loss_2
+                reg_loss = tf.add_n([tf.nn.l2_loss(w) for w in tf.contrib.framework.get_variables_by_name('kernel')])
+
+                total_loss = keypoint_loss_1 + keypoint_loss_2 + args.reg_term * reg_loss
 
             # Call to initialize Head Variables from scratch
             head_variables = tf.contrib.framework.get_variables(HEAD_SCOPE)
@@ -683,8 +679,8 @@ def main(args):
                 staircase=True
                 )
             # begin trainiing with a really low learning rate to avoid killing all of the neurons at the start
-            optimizer_1 = tf.train.RMSPropOptimizer(learning_rate=args.learning_rate_burn_in)
-            train_op_1 = optimizer_1.minimize(total_loss, global_step=global_step, var_list=head_variables, gate_gradients=tf.train.RMSPropOptimizer.GATE_NONE)
+            optimizer_burn_in = tf.train.RMSPropOptimizer(learning_rate=args.learning_rate_burn_in)
+            train_op_burn_in = optimizer_burn_in.minimize(total_loss, global_step=global_step, var_list=head_variables, gate_gradients=tf.train.RMSPropOptimizer.GATE_NONE)
             
             head_optimizer = tf.train.RMSPropOptimizer(learning_rate)
             head_train_op = head_optimizer.minimize(total_loss, global_step=global_step, var_list=head_variables, gate_gradients=tf.train.RMSPropOptimizer.GATE_NONE)
@@ -726,7 +722,7 @@ def main(args):
             batch = 0
             while batch <= args.num_batches_burn_in:
                     try:
-                        loss, _ = sess.run([total_loss, train_op_1], {is_training: True})
+                        loss, _ = sess.run([total_loss, train_op_burn_in], {is_training: True})
                         print('----- Losses for batch {}: Keypoint Loss: {:0>5}'.format(batch+1, loss))
                         if batch % args.summary_every == 0:
                             image_summ, scalar_summ, histogram_summ = sess.run([image_summary, scalar_summary, histogram_summary],{is_training: False})
