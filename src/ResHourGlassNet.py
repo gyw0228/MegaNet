@@ -606,7 +606,7 @@ def main(args):
                 net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
                     graph,
                     inputs=net,
-                    num_filters=[64,128,256,512,1024], 
+                    num_filters=[32,64,128,256,512], 
                     num_bridges=[5,4,3,2,1],
                     scalar_summary_list=scalar_summary_list,
                     image_summary_list=image_summary_list,
@@ -620,7 +620,7 @@ def main(args):
                 net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
                     graph,
                     inputs=net,
-                    num_filters=[16,16,32,32,64], 
+                    num_filters=[8,8,16,16,32], 
                     num_bridges=[5,4,3,2,1],
                     scalar_summary_list=scalar_summary_list,
                     image_summary_list=image_summary_list,
