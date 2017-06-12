@@ -641,9 +641,9 @@ def main(args):
                 scalar_summary_list.append(tf.summary.scalar('loss_1', keypoint_loss_1))
                 scalar_summary_list.append(tf.summary.scalar('loss_2', keypoint_loss_2))
 
-                reg_loss = tf.add_n([tf.nn.l2_loss(w) for w in tf.contrib.framework.get_variables_by_name('kernel')])
+                # reg_loss = tf.add_n([tf.nn.l2_loss(w) for w in tf.contrib.framework.get_variables_by_name('kernel')])
 
-                total_loss = keypoint_loss_1 + keypoint_loss_2 + args.reg_term * reg_loss
+                total_loss = keypoint_loss_1 + keypoint_loss_2 # + args.reg_term * reg_loss
         
             # Call to initialize Head Variables from scratch
             head_variables = tf.contrib.framework.get_variables(HEAD_SCOPE)
