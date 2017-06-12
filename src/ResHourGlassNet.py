@@ -44,7 +44,7 @@ parser.add_argument('--log_path', default='/tmp/KyleNet', type=str)
 parser.add_argument('--dropout_keep_prob', default=0.5, type=float)
 parser.add_argument('--reg_term', default=0.0, type=float) # l2 regularization term
 
-def check_accuracy(sess, keypoint_accuracy, is_training, dataset_init_op, MAX_BATCHES=50):
+def check_accuracy(sess, keypoint_accuracy, labels, is_training, dataset_init_op, MAX_BATCHES=50):
     """
     Check the accuracy of the model on either train or val (depending on dataset_init_op).
     """
@@ -54,34 +54,34 @@ def check_accuracy(sess, keypoint_accuracy, is_training, dataset_init_op, MAX_BA
     epoch_kpt_accuracy = 0
     while True and evals < MAX_BATCHES:
         try:
-            kpt_acc = sess.run(keypoint_accuracy, {is_training: False})
+            kpt_acc, label = sess.run([keypoint_accuracy, labels], {is_training: False})
             epoch_kpt_accuracy += kpt_acc
-            evals += 1
+            evals += 1 * tf.reduce_mean(tf.to_float(tf.greater(label, 1.5)))
         except tf.errors.OutOfRangeError:
             break
     epoch_kpt_accuracy = float(epoch_kpt_accuracy/evals)
 
     return epoch_kpt_accuracy
 
-def check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, is_training, dataset_init_op, MAX_BATCHES=50):
+def check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, labels, is_training, dataset_init_op, MAX_BATCHES=50):
     """
     Check the accuracy of the model on either train or val (depending on dataset_init_op).
     """
     # Initialize the correct dataset
     sess.run(dataset_init_op)
-    evals = 0
-    epoch_kpt_accuracy_1 = 0
-    epoch_kpt_accuracy_2 = 0
+    evals = 0.0
+    epoch_kpt_accuracy_1 = 0.0
+    epoch_kpt_accuracy_2 = 0.0
     while True and evals < MAX_BATCHES:
         try:
-            kpt_acc_1, kpt_acc_2 = sess.run([keypoint_accuracy_1, keypoint_accuracy_2], {is_training: False})
+            kpt_acc_1, kpt_acc_2, label = sess.run([keypoint_accuracy_1, keypoint_accuracy_2, labels], {is_training: False})
             epoch_kpt_accuracy_1 += kpt_acc_1
             epoch_kpt_accuracy_2 += kpt_acc_2
-            evals += 1
+            evals += 1.0# * tf.reduce_mean(tf.to_float(tf.greater(label, 1)))
         except tf.errors.OutOfRangeError:
             break
-    epoch_kpt_accuracy_1 = float(epoch_kpt_accuracy_1/evals)
-    epoch_kpt_accuracy_2 = float(epoch_kpt_accuracy_2/evals)
+    epoch_kpt_accuracy_1 = float(epoch_kpt_accuracy_1/(evals + 0.00001))
+    epoch_kpt_accuracy_2 = float(epoch_kpt_accuracy_2/(evals + 0.00001))
 
     return epoch_kpt_accuracy_1, epoch_kpt_accuracy_2
 
@@ -110,7 +110,7 @@ def keypoint_SoftmaxCrossEntropyLoss(graph, prediction_maps, keypoint_masks, lab
         pred_flat = tf.reshape(prediction_maps, flat_shape)
         masks_flat = tf.reshape(keypoint_masks, flat_shape)
         # softmax over dimension 1
-        losses = tf.nn.softmax_cross_entropy_with_logits(labels=masks_flat,logits=pred_flat,dim=2) # this is correct
+        losses = tf.nn.softmax_cross_entropy_with_logits(labels=masks_flat,logits=pred_flat,dim=2)
         labels = tf.reshape(labels,[-1,1,17])
         losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
         
@@ -181,8 +181,9 @@ def keypointPredictionAccuracy(graph, pred_pts, true_pts, labels, threshold, sco
     """
     with graph.as_default():
         with tf.variable_scope(scope):
-            error = tf.multiply(tf.square(tf.subtract(pred_pts, true_pts)), tf.to_float(tf.greater_equal(labels, 1)))
-            accuracy = tf.reduce_mean(tf.to_float(tf.less(error,tf.square(threshold))))
+            error = tf.reduce_sum(tf.square(tf.subtract(pred_pts, true_pts)), axis=2)
+            accuracy = tf.to_float(tf.less(error,tf.square(threshold))) * tf.to_float(tf.greater_equal(labels,1.5))
+            accuracy = tf.reduce_sum(accuracy) / (tf.reduce_sum(tf.to_float(tf.greater_equal(labels,1.5))) + 0.00001)
             return accuracy
 
 def MaskAccuracy(graph, pred_mask, true_mask):
@@ -567,7 +568,7 @@ def main(args):
 
         resnet_v2 = tf.contrib.slim.nets.resnet_v2
         with slim.arg_scope(resnet_v2.resnet_arg_scope()):
-            logits, endpoints = resnet_v2.resnet_v2_50(
+            _ , endpoints = resnet_v2.resnet_v2_50(
                 inputs=images,
                 num_classes=2,
                 is_training=is_training,
@@ -591,14 +592,15 @@ def main(args):
         with tf.variable_scope(HEAD_SCOPE):
             with tf.variable_scope('Block_0'):
                 # 1st layer
+
                 net = endpoints['resnet_v2_50/conv1']
 
                 histogram_summary_list.append(tf.summary.histogram('layer1_conv', tf.trainable_variables()[0]))
                 image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(tf.trainable_variables()[0],0)),max_outputs=1))
 
-                net = tf.layers.conv2d(net,64,(3,3),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.01))
-                net = tf.layers.batch_normalization(net,axis=3)
-                net = tf.nn.relu(net)
+                # net = tf.layers.conv2d(net,64,(3,3),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.01))
+                # net = tf.layers.batch_normalization(net,axis=3)
+                # net = tf.nn.relu(net)
 
             with tf.variable_scope('Block_1'):
                 net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
@@ -723,7 +725,7 @@ def main(args):
             file_writer = tf.summary.FileWriter(log_path)
             file_writer.add_graph(sess.graph)
             print("Initializing network variables...")
-            init_fn(sess) # resnet variables
+            init_fn(sess)
             sess.run(init_head) # head variables
             print("Initializing optimizer variables...\n")
             sess.run(init_optimizer)
