@@ -185,16 +185,16 @@ def keypoint_SquaredErrorLoss(graph, prediction_maps, keypoint_masks, labels, L=
             
             return losses
 
-def KeypointPrediction(graph, pred_masks, d, vote_threshold = 0.01, scope='KeypointPrediction'):
+def KeypointPrediction(graph, pred_masks, d, vote_threshold=0.5, scope='KeypointPrediction'):
     """
     Input: Keypoint "Heatmap" Tensor
     Output: Keypoint coordinates in tensor form
     """
-    
     with graph.as_default():        
         with tf.variable_scope(scope):
             x = tf.reshape(tf.linspace(0.5,d-0.5,d),[1,d,1,1])
-            pred = tf.multiply(pred_masks, tf.to_float(tf.greater_equal(pred_masks,vote_threshold)))
+            pred = tf.divide(pred_masks, tf.reduce_max(pred_masks, axis=[1,2],keep_dims=True)) # normalizer
+            pred = tf.multiply(pred, tf.to_float(tf.greater_equal(pred,vote_threshold)))
             pred_i = tf.reduce_sum(tf.multiply(pred, x),axis=[1,2])/tf.reduce_sum(pred,axis=[1,2])
             pred_j = tf.reduce_sum(tf.multiply(pred, tf.transpose(x,(0,2,1,3))),axis=[1,2])/tf.reduce_sum(pred,axis=[1,2])
             pred_pts = tf.stack([pred_j,pred_i],axis=1)
@@ -405,7 +405,7 @@ def main(args):
         KP_DISTANCE_THRESHOLD = 5.0 # threshold for determining if a keypoint estimate is accurate
         X_INIT = tf.contrib.layers.xavier_initializer_conv2d() # xavier initializer for head architecture
         learning_rate1 = args.learning_rate1
-        ACCURACY_THRESHOLDS = [1.0, 2.0, 3.0, 5.0, 8.0, 130.0]
+        ACCURACY_THRESHOLDS = [1.0, 2.0, 3.0, 5.0, 8.0, 10.0]
 
         #######################################################
         ################## SUMMARY DICTIONARY #################
@@ -544,11 +544,11 @@ def main(args):
             val_imgIds = val_coco.getImgIds(catIds=val_catIds)
 
             # Just for dealing with the images on my computer (not necessary when working with the whole dataset)
-            if args.small_dataset == True:
-                train_catIds = train_catIds[0:5]
-                train_imgIds = train_imgIds[0:5]
-                val_catIds = val_catIds[0:5]
-                val_imgIds = val_imgIds[0:5]
+            # if args.small_dataset == True:
+            #     train_catIds = train_catIds[0:5]
+            #     train_imgIds = train_imgIds[0:5]
+            #     val_catIds = val_catIds[0:5]
+            #     val_imgIds = val_imgIds[0:5]
 
             ################### TRAIN DATASET ###################
             train_filenames = tf.constant(['{}/COCO_train2014_{:0>12}.jpg'.format(train_img_path, imgID) for imgID in train_imgIds])
@@ -556,7 +556,7 @@ def main(args):
             train_dataset = tf.contrib.data.Dataset.from_tensor_slices((train_filenames, train_imgID_tensor))
             train_dataset = train_dataset.map(
                 lambda filename, imgID: tf.py_func(extract_annotations_train, [filename, imgID], [filename.dtype, tf.int64, tf.int64, tf.uint8]))
-            train_dataset = train_dataset.map(preprocess_image_tf)
+            train_dataset = train_dataset.map(preprocess_image_tf
             train_dataset = train_dataset.map(scaleDownMaskAndKeypoints)
             train_dataset = train_dataset.map(generate_one_hot_keypoint_masks)
             train_dataset = train_dataset.shuffle(buffer_size=10000)
@@ -788,6 +788,7 @@ def main(args):
                         break
 
                 if epoch % args.checkpoint_every == 0:
+                    print('Saving to checkpoint at {}'.format(save_path))
                     head_saver.save(sess, save_path, global_step=tf.train.global_step(sess, global_step))
 
                 # # Check accuracy on the train and val sets every epoch.
