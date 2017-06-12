@@ -562,6 +562,28 @@ def main(args):
         is_training = tf.placeholder(tf.bool)
 
         # --------------------------------------------------- #
+        # ---------------- ResNet Base Layer ---------------- #
+        # --------------------------------------------------- #
+
+        resnet_v2 = tf.contrib.slim.nets.resnet_v2
+        with slim.arg_scope(resnet_v2.resnet_arg_scope()):
+            logits, endpoints = resnet_v2.resnet_v2_50(
+                inputs=images,
+                num_classes=2,
+                is_training=is_training,
+                reuse=None,
+                output_stride=16,
+                scope='resnet_v2_50'
+                )
+
+        # Model Path to ResNet v2 50 checkpoint
+        model_path = args.model_path
+        assert(os.path.isfile(model_path))
+        # Restore just the first convolutional layer
+        resnet_variables = tf.contrib.framework.get_variables_to_restore(include=['resnet_v2_50/conv1'])
+        init_fn = tf.contrib.framework.assign_from_checkpoint_fn(model_path, resnet_variables) # Call to load pretrained weights
+
+        # --------------------------------------------------- #
         # --------------- "Head" Architecture --------------- #
         # --------------------------------------------------- #
         print("Defining Network architecture...\n")
@@ -569,12 +591,14 @@ def main(args):
         with tf.variable_scope(HEAD_SCOPE):
             with tf.variable_scope('Block_0'):
                 # 1st layer
-                net = tf.layers.conv2d(images,64,(5,5),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.01))
-                net = tf.layers.batch_normalization(net,axis=3)
-                net = tf.nn.relu(net)
+                net = endpoints['resnet_v2_50/conv1']
 
                 histogram_summary_list.append(tf.summary.histogram('layer1_conv', tf.trainable_variables()[0]))
                 image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(tf.trainable_variables()[0],0)),max_outputs=1))
+
+                net = tf.layers.conv2d(net,64,(3,3),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.01))
+                net = tf.layers.batch_normalization(net,axis=3)
+                net = tf.nn.relu(net)
 
             with tf.variable_scope('Block_1'):
                 net, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
@@ -699,6 +723,7 @@ def main(args):
             file_writer = tf.summary.FileWriter(log_path)
             file_writer.add_graph(sess.graph)
             print("Initializing network variables...")
+            init_fn(sess) # resnet variables
             sess.run(init_head) # head variables
             print("Initializing optimizer variables...\n")
             sess.run(init_optimizer)
