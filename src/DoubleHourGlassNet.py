@@ -576,7 +576,7 @@ def main(args):
                 histogram_summary_list.append(tf.summary.histogram('layer1_conv', tf.trainable_variables()[0]))
                 image_summary_list.append(tf.summary.image('layer1_conv', getFilterImage(tf.expand_dims(tf.trainable_variables()[0],0)),max_outputs=1))
 
-                net = tf.layers.conv2d(images,64,(3,3),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.01))
+                net = tf.layers.conv2d(net,64,(3,3),(2,2),padding='SAME',bias_initializer=tf.constant_initializer(0.01))
                 net = tf.layers.batch_normalization(net,axis=3)
                 net = tf.nn.relu(net)
 
