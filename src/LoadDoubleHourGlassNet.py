@@ -182,8 +182,8 @@ def keypointPredictionAccuracy(graph, pred_pts, true_pts, labels, threshold, sco
     with graph.as_default():
         with tf.variable_scope(scope):
             error = tf.reduce_sum(tf.square(tf.subtract(pred_pts, true_pts)), axis=2)
-            accuracy = tf.to_float(tf.less(error,tf.square(threshold))) * tf.to_float(tf.greater_equal(labels,1.5))
-            accuracy = tf.reduce_sum(accuracy) / (tf.reduce_sum(tf.to_float(tf.greater_equal(labels,1.5))) + 0.00001)
+            accuracy = tf.to_float(tf.less(error,tf.square(threshold))) * tf.to_float(labels)
+            accuracy = tf.reduce_sum(accuracy) / (tf.reduce_sum(labels) + 0.00001)
             return accuracy
 
 def MaskAccuracy(graph, pred_mask, true_mask):
@@ -708,7 +708,7 @@ def main(args):
             sess.run(init_optimizer)
 
             #############################################################
-            ###################### TRAINING ROUND 0 #####################
+            ###################### TRAINING ROUND 1 #####################
             #############################################################
             for epoch in range(args.num_epochs1):
                 # Run an epoch over the training data.

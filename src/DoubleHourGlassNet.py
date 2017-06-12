@@ -85,6 +85,31 @@ def check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, labels
 
     return epoch_kpt_accuracy_1, epoch_kpt_accuracy_2
 
+def check_all_double_accuracy(sess, acc_list, labels, is_training, dataset_init_op, MAX_BATCHES=50):
+    """
+    Check the accuracy of the model on either train or val (depending on dataset_init_op).
+    """
+    # Initialize the correct dataset
+    sess.run(dataset_init_op)
+    evals = 0.0
+    tmp_list = acc_list.copy()
+    tmp_list.append(labels)
+    counts = [0.0 for i in range(len(tmp_list))]
+    accuracies = []
+    while True and evals < 10:
+        try:
+            Accs = sess.run(tmp_list)
+            for i in range(len(Accs)-1):
+                counts[i] = counts[i] + Accs[i]
+                evals += 1.0 * np.mean(Accs[-1]) # label
+        except tf.errors.OutOfRangeError:
+            break
+
+    for i in range(len(Accs)-1):
+        accuracies.append(float(counts[i]/(evals + 0.00001)))
+
+    return accuracies
+
 def keypoint_SigmoidCrossEntropyLoss(graph, prediction_maps, keypoint_masks, labels, L=5.0, scope="keypointLoss"):
     """
     heat_maps = predictions from network
@@ -160,15 +185,16 @@ def keypoint_SquaredErrorLoss(graph, prediction_maps, keypoint_masks, labels, L=
             
             return losses
 
-def KeypointPrediction(graph, pred_masks, d, scope='KeypointPrediction'):
+def KeypointPrediction(graph, pred_masks, d, vote_threshold = 0.01, scope='KeypointPrediction'):
     """
     Input: Keypoint "Heatmap" Tensor
     Output: Keypoint coordinates in tensor form
     """
+    
     with graph.as_default():        
         with tf.variable_scope(scope):
             x = tf.reshape(tf.linspace(0.5,d-0.5,d),[1,d,1,1])
-            pred = tf.multiply(pred_masks, tf.to_float(tf.greater_equal(pred_masks,0.5)))
+            pred = tf.multiply(pred_masks, tf.to_float(tf.greater_equal(pred_masks,vote_threshold)))
             pred_i = tf.reduce_sum(tf.multiply(pred, x),axis=[1,2])/tf.reduce_sum(pred,axis=[1,2])
             pred_j = tf.reduce_sum(tf.multiply(pred, tf.transpose(x,(0,2,1,3))),axis=[1,2])/tf.reduce_sum(pred,axis=[1,2])
             pred_pts = tf.stack([pred_j,pred_i],axis=1)
@@ -182,8 +208,8 @@ def keypointPredictionAccuracy(graph, pred_pts, true_pts, labels, threshold, sco
     with graph.as_default():
         with tf.variable_scope(scope):
             error = tf.reduce_sum(tf.square(tf.subtract(pred_pts, true_pts)), axis=2)
-            accuracy = tf.to_float(tf.less(error,tf.square(threshold))) * tf.to_float(tf.greater_equal(labels,1.5))
-            accuracy = tf.reduce_sum(accuracy) / (tf.reduce_sum(tf.to_float(tf.greater_equal(labels,1.5))) + 0.00001)
+            accuracy = tf.to_float(tf.less(error,tf.square(threshold))) * tf.to_float(labels)
+            accuracy = tf.reduce_sum(accuracy) / (tf.reduce_sum(labels) + 0.00001)
             return accuracy
 
 def MaskAccuracy(graph, pred_mask, true_mask):
@@ -379,6 +405,7 @@ def main(args):
         KP_DISTANCE_THRESHOLD = 5.0 # threshold for determining if a keypoint estimate is accurate
         X_INIT = tf.contrib.layers.xavier_initializer_conv2d() # xavier initializer for head architecture
         learning_rate1 = args.learning_rate1
+        ACCURACY_THRESHOLDS = [1.0, 2.0, 3.0, 5.0, 8.0, 130.0]
 
         #######################################################
         ################## SUMMARY DICTIONARY #################
@@ -518,10 +545,10 @@ def main(args):
 
             # Just for dealing with the images on my computer (not necessary when working with the whole dataset)
             if args.small_dataset == True:
-                train_catIds = train_catIds[0:30]
-                train_imgIds = train_imgIds[0:30]
-                val_catIds = val_catIds[0:30]
-                val_imgIds = val_imgIds[0:30]
+                train_catIds = train_catIds[0:5]
+                train_imgIds = train_imgIds[0:5]
+                val_catIds = val_catIds[0:5]
+                val_imgIds = val_imgIds[0:5]
 
             ################### TRAIN DATASET ###################
             train_filenames = tf.constant(['{}/COCO_train2014_{:0>12}.jpg'.format(train_img_path, imgID) for imgID in train_imgIds])
@@ -609,25 +636,32 @@ def main(args):
                 keypoint_mask_predictions1 = softmax_keypoint_masks(logits_1, d=d)
                 keypoint_predictions1 = KeypointPrediction(graph,keypoint_mask_predictions1,d=d)
                 keypoint_accuracy_1 = keypointPredictionAccuracy(graph,keypoint_predictions1,pts,labels,threshold=4.0)
+                acc_list_1 = [keypointPredictionAccuracy(graph,keypoint_predictions1,pts,labels,threshold=i) for i in ACCURACY_THRESHOLDS]
 
                 image_summary_list.append(tf.summary.image('Head - keypoint mask prediction1', getActivationImage(keypoint_mask_predictions1),max_outputs=1))
                 image_summary_list.append(tf.summary.image('keypoint_overlay_pred1', keypointHeatMapOverlay(images, keypoint_mask_predictions1, threshold=KP_VIS_THRESHOLD), max_outputs=1))
-                scalar_summary_list.append(tf.summary.scalar(
-                        'Head - keypoint1 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions1, pts, labels, 1.0)))
+                for i in range(len(ACCURACY_THRESHOLDS)):
+                    scalar_summary_list.append(tf.summary.scalar(
+                        'Head - keypoint 1 accuracy delta={}'.format(i), acc_list_1[i]))
 
             with tf.variable_scope('predictions2'):
                 keypoint_mask_predictions2 = softmax_keypoint_masks(logits_2, d=d)
                 keypoint_predictions2 = KeypointPrediction(graph,keypoint_mask_predictions2,d=d)
                 keypoint_accuracy_2 = keypointPredictionAccuracy(graph,keypoint_predictions2,pts,labels,threshold=4.0)
+                acc_list_2 = [keypointPredictionAccuracy(graph,keypoint_predictions2,pts,labels,threshold=i) for i in ACCURACY_THRESHOLDS]
 
                 image_summary_list.append(tf.summary.image('Head - keypoint mask prediction2', getActivationImage(keypoint_mask_predictions2),max_outputs=1))
                 image_summary_list.append(tf.summary.image('keypoint_overlay_pred2', keypointHeatMapOverlay(images, keypoint_mask_predictions2, threshold=KP_VIS_THRESHOLD), max_outputs=1))
-                scalar_summary_list.append(tf.summary.scalar(
-                        'Head - keypoint2 accuracy delta={}'.format(1.0), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, 1.0)))
-                # for i in [1.0,2.0,3.0,5.0,8.0]:
-                #     scalar_summary_list.append(tf.summary.scalar(
-                #         'Head - keypoint accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, i)))
+                for i in ACCURACY_THRESHOLDS:
+                    scalar_summary_list.append(tf.summary.scalar(
+                        'Head - keypoint 2 accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, i)))
 
+            acc_list = []
+            for i in range(len(acc_list_1)):
+                acc_list.append(acc_list_1[i])
+            for i in range(len(acc_list_2)):
+                acc_list.append(acc_list_2[i])
+            
         #######################################################
         ####################### LOSSES ########################
         #######################################################
@@ -689,12 +723,14 @@ def main(args):
         with tf.Session(graph=graph) as sess:
             # file writer to save graph for Tensorboard
             log_path = args.log_path
+            save_path = args.save_path
             i = 0
             while True:
-                if os.path.isdir('{}/{}'.format(log_path,i)):
+                if os.path.isdir('{}/{}'.format(log_path,i)) or os.path.isdir('{}/{}'.format(save_path,i)):
                     i += 1
                 else:
                     log_path = '{}/{}'.format(log_path,i)
+                    save_path = '{}/{}'.format(save_path,i)
                     break
 
             file_writer = tf.summary.FileWriter(log_path)
@@ -752,17 +788,24 @@ def main(args):
                         break
 
                 if epoch % args.checkpoint_every == 0:
-                    head_saver.save(sess, args.save_path, global_step=tf.train.global_step(sess, global_step))
+                    head_saver.save(sess, save_path, global_step=tf.train.global_step(sess, global_step))
 
                 # # Check accuracy on the train and val sets every epoch.
-                print("DO NOT PANIC - CHECKING ACCURACY")
+                print("CHECKING ACCURACY")
                 print("This part takes a while because the training set and the validation set both have to be initialized...")
-                kpt_train_acc_1, kpt_train_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, labels, is_training, train_init_op)
-                kpt_val_acc_1, kpt_val_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, labels, is_training, val_init_op)
-                print('Train accuracy ---- Keypoints_1: {:0>5}'.format(kpt_train_acc_1))
-                print('  Val accuracy ---- Keypoints_1: {:0>5}'.format(kpt_val_acc_1))
-                print('Train accuracy ---- Keypoints_2: {:0>5}'.format(kpt_train_acc_2))
-                print('  Val accuracy ---- Keypoints_2: {:0>5}'.format(kpt_val_acc_2))
+
+                train_accuracies = check_all_double_accuracy(sess, acc_list, labels, is_training, train_init_op)
+                val_accuracies = check_all_double_accuracy(sess, acc_list, labels, is_training, train_init_op)
+                train_accuracies_1 = train_accuracies[:len(ACCURACY_THRESHOLDS)]
+                train_accuracies_2 = train_accuracies[len(ACCURACY_THRESHOLDS):]
+                val_accuracies_1 = val_accuracies[:len(ACCURACY_THRESHOLDS)]
+                val_accuracies_2 = val_accuracies[len(ACCURACY_THRESHOLDS):]
+
+                for i in range(len(train_accuracies_1)):
+                    print('Train accuracy ---- Keypoints_1 -- delta={}: {:0>5}'.format(ACCURACY_THRESHOLDS[i], train_accuracies_1[i]))
+                    print('Train accuracy ---- Keypoints_2 -- delta={}: {:0>5}'.format(ACCURACY_THRESHOLDS[i], train_accuracies_2[i]))
+                    print('  Val accuracy ---- Keypoints_1 -- delta={}: {:0>5}'.format(ACCURACY_THRESHOLDS[i], val_accuracies_1[i]))
+                    print('  Val accuracy ---- Keypoints_2 -- delta={}: {:0>5}'.format(ACCURACY_THRESHOLDS[i], val_accuracies_2[i]))
 
             print("Finished")
             return
