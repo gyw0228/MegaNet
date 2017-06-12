@@ -757,8 +757,8 @@ def main(args):
                 # # Check accuracy on the train and val sets every epoch.
                 print("DO NOT PANIC - CHECKING ACCURACY")
                 print("This part takes a while because the training set and the validation set both have to be initialized...")
-                kpt_train_acc_1, kpt_train_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, is_training, train_init_op)
-                kpt_val_acc_1, kpt_val_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, is_training, val_init_op)
+                kpt_train_acc_1, kpt_train_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, labels, is_training, train_init_op)
+                kpt_val_acc_1, kpt_val_acc_2 = check_double_accuracy(sess, keypoint_accuracy_1, keypoint_accuracy_2, labels, is_training, val_init_op)
                 print('Train accuracy ---- Keypoints_1: {:0>5}'.format(kpt_train_acc_1))
                 print('  Val accuracy ---- Keypoints_1: {:0>5}'.format(kpt_val_acc_1))
                 print('Train accuracy ---- Keypoints_2: {:0>5}'.format(kpt_train_acc_2))
