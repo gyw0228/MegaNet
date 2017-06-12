@@ -423,7 +423,7 @@ def main(args):
                 image_string = tf.read_file(filename)
                 image_decoded = tf.image.decode_jpeg(image_string, channels=3)
                 image = tf.cast(image_decoded, tf.float32)
-                
+
                 # subtract mean
                 image = tf.subtract(image, tf.reduce_mean(image))
 
@@ -441,42 +441,32 @@ def main(args):
                 corner2 = tf.to_int32(tf.minimum(tf.maximum(tf.add(center, tf.divide(sideLength,tf.constant(2.0))),0),
                                     tf.reverse(tf.to_float(tf.shape(image)[:2]),tf.constant([0]))))
                 i_shape = tf.subtract(corner2,corner1)
-                d_shape = tf.subtract(tf.to_int32(sideLength),i_shape)
-
+                ##### Move corner 2 to enforce squareness!! #####
+                corner2 = corner1 + tf.reduce_min(i_shape)
+                sideLength = tf.to_float(tf.reduce_min(corner2-corner1))
+                
                 scale = tf.divide(tf.constant(D,tf.float32), sideLength)
                 cropped_image = tf.image.crop_to_bounding_box(image,corner1[1],corner1[0],
                                                             tf.subtract(corner2,corner1)[1],tf.subtract(corner2,corner1)[0])
                 cropped_mask = tf.image.crop_to_bounding_box(mask,corner1[1],corner1[0],
                                                             tf.subtract(corner2,corner1)[1],tf.subtract(corner2,corner1)[0])
 
-                dX = tf.floor(tf.divide(d_shape,tf.constant(2)))
-                dY = tf.ceil(tf.divide(d_shape,tf.constant(2)))
-
                 pts, labels = tf.split(keypoints_tensor,[2,1],axis=1)
                 pts = tf.subtract(pts,tf.to_float(corner1)) # shift keypoints
-                pts = tf.add(pts,tf.to_float(dX)) # shift keypoints
                 pts = tf.multiply(pts,scale) # scale keypoints
 
                 # set invalid pts to 0
                 valid = tf.less(pts,tf.constant(D,tf.float32))
-                valid = tf.multiply(tf.to_int32(valid), tf.to_int32(tf.greater(pts,0)))
-                pts = tf.multiply(pts,tf.to_float(valid))
+                valid = tf.reduce_min(tf.multiply(tf.to_float(valid), tf.to_float(tf.greater(pts,0))), axis=1, keep_dims=True)
+                pts = tf.multiply(pts,valid)
+                labels = tf.multiply(labels,valid)
                 pts = tf.transpose(pts,[1,0])
                 labels = tf.transpose(labels,[1,0])
-                labels = tf.to_float(tf.greater_equal(labels, 2))
+                labels = tf.to_float(tf.greater_equal(labels, 1.5)) # only use labels whose values are 2 - is this a good idea?
 
-                padded_image = tf.image.pad_to_bounding_box(cropped_image,tf.to_int32(dX[1]),tf.to_int32(dX[0]),
-                                                            tf.to_int32(sideLength),tf.to_int32(sideLength))
-                padded_mask = tf.image.pad_to_bounding_box(cropped_mask,tf.to_int32(dX[1]),tf.to_int32(dX[0]),
-                                                            tf.to_int32(sideLength),tf.to_int32(sideLength))
-
-                # if image size is not square, set labels to zero (so loss will be zero padding won't affect training)
-                is_padded = tf.reduce_min(tf.to_float(tf.less(dX, 1.0)))
-                labels = is_padded * labels
-
-                resized_image = tf.image.resize_images(padded_image,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
-                # resized_image = resized_image - VGG_MEAN
-                resized_mask = tf.image.resize_images(padded_mask,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+                resized_image = tf.image.resize_images(cropped_image,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+                resized_mask = tf.image.resize_images(cropped_mask,tf.constant([D,D]),tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+                
                 return resized_image, resized_mask, pts, labels
 
             def scaleDownMaskAndKeypoints(image, mask, pts, labels, d=d, D=D):
