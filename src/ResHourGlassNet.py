@@ -110,8 +110,8 @@ def keypoint_SoftmaxCrossEntropyLoss(graph, prediction_maps, keypoint_masks, lab
         pred_flat = tf.reshape(prediction_maps, flat_shape)
         masks_flat = tf.reshape(keypoint_masks, flat_shape)
         # softmax over dimension 1
-        losses = tf.nn.softmax_cross_entropy_with_logits(labels=masks_flat,logits=pred_flat,dim=2)
-        labels = tf.reshape(labels,[-1,1,1,17])
+        losses = tf.nn.softmax_cross_entropy_with_logits(labels=masks_flat,logits=pred_flat,dim=2) # this is correct
+        labels = tf.reshape(labels,[-1,1,17])
         losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
         
         return losses
