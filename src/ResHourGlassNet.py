@@ -494,7 +494,7 @@ def main(args):
                 kp_mask1 = tf.one_hot(depth=d,indices=indices[:,1,:],axis=0)
                 kp_mask2 = tf.one_hot(depth=d,indices=indices[:,0,:],axis=1)
                 kp_masks = tf.matmul(tf.transpose(kp_mask1,(2,0,1)),tf.transpose(kp_mask2,(2,0,1)))
-                kp_masks = tf.transpose(kp_masks,(1,2,0))*labels
+                kp_masks = tf.transpose(kp_masks,(1,2,0)) # *labels # don't multiply by zeros, because they don't play nice wift softmax later...
                 return image, mask, kp_masks, pts, labels
 
             
