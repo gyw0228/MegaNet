@@ -592,7 +592,7 @@ def main(args):
 
                 # 1 x 1 convolution into prediction logits
                 logits_1 = tf.layers.conv2d(block1, 17,(1,1),(1,1),padding='SAME')
-                block1 = tf.concat([block1,net],axis=3)
+                # block1 = tf.concat([block1,net],axis=3)
 
             with tf.variable_scope('Block_2'):
                 block2, scalar_summary_list, image_summary_list, histogram_summary_list = HourGlassNet(
