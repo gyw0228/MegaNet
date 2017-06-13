@@ -98,7 +98,7 @@ def check_all_double_accuracy(sess, acc_list, labels, is_training, dataset_init_
     accuracies = []
     while True and evals < 10:
         try:
-            Accs = sess.run(tmp_list)
+            Accs = sess.run(tmp_list, {is_training: False})
             for i in range(len(Accs)-1):
                 counts[i] = counts[i] + Accs[i]
                 evals += 1.0 * np.mean(Accs[-1]) # label
@@ -136,7 +136,7 @@ def keypoint_SoftmaxCrossEntropyLoss(graph, prediction_maps, keypoint_masks, lab
         masks_flat = tf.reshape(keypoint_masks, flat_shape)
         # softmax over dimension 1
         losses = tf.nn.softmax_cross_entropy_with_logits(labels=masks_flat,logits=pred_flat,dim=2)
-        labels = tf.reshape(labels,[-1,1,17])
+        labels = tf.reshape(labels,[-1,1,1,17])
         losses = tf.multiply(losses,labels) # set loss to zero for invalid keypoints (labels=0)
         
         return losses
@@ -544,11 +544,11 @@ def main(args):
             val_imgIds = val_coco.getImgIds(catIds=val_catIds)
 
             # Just for dealing with the images on my computer (not necessary when working with the whole dataset)
-            # if args.small_dataset == True:
-            #     train_catIds = train_catIds[0:5]
-            #     train_imgIds = train_imgIds[0:5]
-            #     val_catIds = val_catIds[0:5]
-            #     val_imgIds = val_imgIds[0:5]
+            if args.small_dataset == True:
+                train_catIds = train_catIds[0:30]
+                train_imgIds = train_imgIds[0:30]
+                val_catIds = val_catIds[0:30]
+                val_imgIds = val_imgIds[0:30]
 
             ################### TRAIN DATASET ###################
             train_filenames = tf.constant(['{}/COCO_train2014_{:0>12}.jpg'.format(train_img_path, imgID) for imgID in train_imgIds])
@@ -654,7 +654,7 @@ def main(args):
                 image_summary_list.append(tf.summary.image('keypoint_overlay_pred2', keypointHeatMapOverlay(images, keypoint_mask_predictions2, threshold=KP_VIS_THRESHOLD), max_outputs=1))
                 for i in ACCURACY_THRESHOLDS:
                     scalar_summary_list.append(tf.summary.scalar(
-                        'Head - keypoint 2 accuracy delta={}'.format(i), keypointPredictionAccuracy(graph, keypoint_predictions2, pts, labels, i)))
+                        'Head - keypoint 2 accuracy delta={}'.format(i), acc_list_2))
 
             acc_list = []
             for i in range(len(acc_list_1)):
