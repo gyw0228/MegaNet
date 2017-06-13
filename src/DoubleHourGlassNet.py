@@ -556,7 +556,7 @@ def main(args):
             train_dataset = tf.contrib.data.Dataset.from_tensor_slices((train_filenames, train_imgID_tensor))
             train_dataset = train_dataset.map(
                 lambda filename, imgID: tf.py_func(extract_annotations_train, [filename, imgID], [filename.dtype, tf.int64, tf.int64, tf.uint8]))
-            train_dataset = train_dataset.map(preprocess_image_tf
+            train_dataset = train_dataset.map(preprocess_image_tf)
             train_dataset = train_dataset.map(scaleDownMaskAndKeypoints)
             train_dataset = train_dataset.map(generate_one_hot_keypoint_masks)
             train_dataset = train_dataset.shuffle(buffer_size=10000)
